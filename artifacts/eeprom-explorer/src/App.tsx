@@ -262,14 +262,14 @@ function Home() {
           <div className="brand-mark" aria-hidden="true"><CircuitBoard size={22} strokeWidth={1.8} /></div>
           <div>
             <p className="brand-name">EEPROM Explorer</p>
-            <p className="brand-sub">field utility · rev 2.4</p>
+             <p className="brand-sub">atari style utility · rev 2.4</p>
           </div>
         </div>
-        <p className="side-label">Workspace</p>
+         <p className="side-label">Manual index</p>
         <nav className="nav-list" aria-label="Utility sections">
-          <button className="nav-item active" data-testid="nav-drive"><HardDrive size={16} /><span>Drive browser</span></button>
-          <button className="nav-item" data-testid="nav-activity" onClick={() => document.getElementById('activity-log')?.scrollIntoView({ behavior: 'smooth' })}><Activity size={16} /><span>Activity log</span></button>
-          <button className="nav-item" data-testid="nav-hardware" onClick={() => document.getElementById('hardware-status')?.scrollIntoView({ behavior: 'smooth' })}><Network size={16} /><span>Hardware status</span></button>
+           <button className="nav-item active" data-testid="nav-drive"><HardDrive size={16} /><span>Directory</span></button>
+           <button className="nav-item" data-testid="nav-activity" onClick={() => document.getElementById('activity-log')?.scrollIntoView({ behavior: 'smooth' })}><Activity size={16} /><span>Activity log</span></button>
+           <button className="nav-item" data-testid="nav-hardware" onClick={() => document.getElementById('hardware-status')?.scrollIntoView({ behavior: 'smooth' })}><Network size={16} /><span>Bus diagnostics</span></button>
         </nav>
         <div className="side-drive" data-testid="card-drive-summary">
           <div className="drive-mini-head"><strong>EEPROM_VOL</strong><button className="eject-btn" title="Refresh drive" onClick={refreshDrive} data-testid="button-refresh-sidebar"><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /></button></div>
@@ -277,29 +277,29 @@ function Home() {
           <div className="meter-track"><div className="meter-fill" style={{ width: `${Math.min(100, (usedBytes / 32768) * 100)}%` }} /></div>
           <div className="mini-meta">I²C · 0x50 · 24LC256</div>
         </div>
-        <div className="side-footer"><span><i className="online-dot" />online</span><span>local mode</span></div>
+         <div className="side-footer"><span><i className="online-dot" />ready</span><span>local mode</span></div>
       </aside>
 
       <main className="console-main">
         <header className="topbar">
           <div>
-            <div className="topbar-kicker">removable memory / directory view</div>
-            <h1 className="topbar-title">Drive browser</h1>
+             <div className="topbar-kicker">chapter 03 / directory control</div>
+             <h1 className="topbar-title">Disk directory</h1>
           </div>
           <div className="topbar-actions">
-            <div className="hardware-chip"><i className="online-dot" /> I²C connected · 0x50</div>
+             <div className="hardware-chip"><i className="online-dot" /> bus online · 0x50</div>
             <button className="action-button" onClick={refreshDrive} data-testid="button-refresh-drive" title="Read the directory again"><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /><span>Refresh</span></button>
           </div>
         </header>
 
         <section className="toolbar" aria-label="File actions">
-          <button className="action-button primary" onClick={() => setDialog('folder')} data-testid="button-new-folder"><FolderPlus size={14} /><span>New folder</span></button>
-          <button className="action-button" onClick={() => fileInputRef.current?.click()} data-testid="button-import"><Upload size={14} /><span>Import file</span></button>
+           <button className="action-button primary" onClick={() => setDialog('folder')} data-testid="button-new-folder"><FolderPlus size={14} /><span>Make directory</span></button>
+           <button className="action-button" onClick={() => fileInputRef.current?.click()} data-testid="button-import"><Upload size={14} /><span>Read into disk</span></button>
           <input ref={fileInputRef} type="file" hidden onChange={(event) => { const picked = event.target.files?.[0]; if (picked) void importFile(picked); event.target.value = ''; }} data-testid="input-file-import" />
-          <button className="action-button" disabled={!selectedFile} onClick={exportFile} data-testid="button-export"><Download size={14} /><span>Export</span></button>
-          <button className="action-button danger" disabled={!selectedFile} onClick={() => setDialog('delete')} data-testid="button-delete"><Trash2 size={14} /><span>Delete</span></button>
+           <button className="action-button" disabled={!selectedFile} onClick={exportFile} data-testid="button-export"><Download size={14} /><span>Write out</span></button>
+           <button className="action-button danger" disabled={!selectedFile} onClick={() => setDialog('delete')} data-testid="button-delete"><Trash2 size={14} /><span>Erase</span></button>
           <div className="tool-divider" />
-          <div className="search-wrap"><Search size={15} /><input className="search-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter files in this folder" aria-label="Filter files" data-testid="input-search-files" /></div>
+           <div className="search-wrap"><Search size={15} /><input className="search-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search directory entries" aria-label="Filter files" data-testid="input-search-files" /></div>
           <div className="view-switch" aria-label="View mode">
             <button className={view === 'list' ? 'selected' : ''} onClick={() => setView('list')} title="List view" data-testid="button-list-view"><List size={15} /></button>
             <button className={view === 'icons' ? 'selected' : ''} onClick={() => setView('icons')} title="Icon view" data-testid="button-icon-view"><MoreHorizontal size={15} /></button>
@@ -351,7 +351,7 @@ function Home() {
 
           <aside className="right-rail">
             <section className="hardware-panel" id="hardware-status" data-testid="panel-hardware-status">
-              <div className="hardware-heading"><div><h2>Hardware status</h2><p>live bus telemetry</p></div><span className="connected-badge"><i /> connected</span></div>
+               <div className="hardware-heading"><div><h2>Bus diagnostics</h2><p>live I²C telemetry</p></div><span className="connected-badge"><i /> online</span></div>
               <div className="hardware-list">
                 <div className="hardware-stat"><span>Bus address</span><strong>0x50</strong></div>
                 <div className="hardware-stat"><span>Device type</span><strong>24LC256</strong></div>
@@ -370,7 +370,7 @@ function Home() {
             </section>
 
             <section className="activity-panel" id="activity-log" data-testid="panel-activity-log">
-              <div className="activity-title"><Activity size={14} /><strong>Activity</strong></div>
+               <div className="activity-title"><Activity size={14} /><strong>Operations log</strong></div>
               <div className="activity-list">{activity.map((item) => <div className="activity-item" key={item.id}><span className="activity-time">{item.time}</span><span className="activity-copy"><strong>{item.message}</strong>{item.detail ? ` · ${item.detail}` : ''}</span></div>)}</div>
             </section>
           </aside>
