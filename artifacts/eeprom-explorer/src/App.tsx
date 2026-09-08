@@ -261,7 +261,7 @@ function Home() {
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true"><CircuitBoard size={22} strokeWidth={1.8} /></div>
           <div>
-            <p className="brand-name">EEPROM Explorer</p>
+            <p className="brand-name">SaveKey-Manager</p>
              <p className="brand-sub">atari style utility · rev 2.4</p>
           </div>
         </div>

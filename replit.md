@@ -1,4 +1,4 @@
-# EEPROM Explorer
+# SaveKey-Manager
 
 A retro administration console for browsing and managing an I²C EEPROM filesystem with a familiar floppy-disk explorer experience.
 
