@@ -1,6 +1,6 @@
-# [Project name]
+# EEPROM Explorer
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A retro administration console for browsing and managing an I²C EEPROM filesystem with a familiar floppy-disk explorer experience.
 
 ## Run & Operate
 
@@ -22,15 +22,20 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/eeprom-explorer` — the runnable React/Vite administration console
+- `artifacts/eeprom-explorer/src/App.tsx` — explorer state, sample EEPROM data, and interactions
+- `artifacts/eeprom-explorer/src/index.css` — the visual system for the aged floppy-label / lab utility aesthetic
+- `artifacts/api-server` — shared API server scaffold, currently not required by the local-only first build
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The first build uses local in-memory sample data so the complete explorer interaction model can be evaluated without attached EEPROM hardware.
+- The UI keeps hardware telemetry visible alongside file browsing because write-protection and bus state are safety-critical context for administrative actions.
+- The visual language intentionally combines tactile removable-media cues with dense, readable utility controls rather than presenting as a generic dashboard.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+The app lets embedded developers browse EEPROM folders and files, search and switch views, inspect text or hex contents, import/export files, create folders, delete items, refresh the drive, and monitor I²C connection and capacity status.
 
 ## User preferences
 
@@ -38,7 +43,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The explorer currently runs in local/demo mode; import, export, and mutations are in-memory until a real I²C adapter bridge is connected.
+- The app is served from the root preview path and requires the managed web workflow to provide `PORT` and `BASE_PATH`.
 
 ## Pointers
 
