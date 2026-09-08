@@ -14,19 +14,12 @@ I2C0 on the Pico's physical header pins 6/7, which are GPIO4 (SDA) and GPIO5 (SC
 
 - [x] I²C driver: init, probe, write, read ([src/i2c_bus.c](src/i2c_bus.c))
 - [x] Bring-up firmware ([src/main.c](src/main.c)): scans 0x50–0x57 every few seconds and prints the results over USB CDC (virtual COM port) — flash this now to sanity-check the wiring, no host app needed yet.
-- [ ] USB command protocol (PING / GET_INFO / I2C_PROBE / I2C_READ / I2C_WRITE) — pending a CDC-vs-HID decision, see below.
-- [ ] Desktop/browser-side transport (Web Serial vs WebHID)
+- [ ] USB command protocol (PING / GET_INFO / I2C_PROBE / I2C_READ / I2C_WRITE) — transport decided (below), protocol design itself still to do.
+- [x] Desktop/browser-side transport: **CDC over Web Serial** (decided 2026-09-09)
 
-### CDC vs HID (open decision)
+### CDC vs HID — decided: CDC
 
-Not yet decided. Trade-offs as of 2026-09-08:
-
-Client is confirmed to be a plain browser PWA hosted on GitHub Pages (no Electron/Tauri wrapper) — so **both** transports are equally constrained: Web Serial and WebHID are each Chromium-only (Chrome/Edge/Opera), unsupported in Firefox and Safari. That's a fixed cost either way, not a differentiator between CDC and HID.
-
-- **CDC** (virtual COM port, what the bring-up firmware uses today): easy to debug with any terminal program (PuTTY, `screen`, ...) — no custom tooling needed. On Windows, USB-CDC-ACM generally works via the inbox driver on Windows 10+, but is more prone to edge cases (misbehaving descriptors, locked-down corporate machines blocking driver installs) than HID.
-- **HID**: zero driver installation ever, on any OS — same class as keyboards/mice, the most plug-and-play option for non-technical users. Downside: packets capped at 64 bytes per report, so bulk EEPROM reads (e.g. a 256 KiB dump) need app-level chunking — more protocol code, though not a real performance problem at these data sizes. Also harder to debug ad-hoc (no generic terminal tool).
-
-Given the confirmed all-browser-PWA architecture and a PC-focused, non-technical user base, HID's zero-driver-friction is the stronger argument — but not yet finalized. Revisit and pick one before implementing the USB command protocol.
+Went with CDC/Web Serial, not HID, once the walking-skeleton test (see `artifacts/eeprom-explorer/src/lib/pico-bridge.ts`) proved it out on real hardware: connected fine, and correctly told apart the SaveKey Plus's two devices (0x50 + 0x54-0x57) from a normal single-EEPROM SaveKey after hotplugging. Deciding factor: CDC keeps debugging easy (any terminal program can watch the bring-up output directly), and the earlier concern about Web Serial being Chromium-only turned out to be a wash anyway — WebHID has the exact same restriction, so it bought nothing there. HID's zero-driver-install advantage stayed theoretical; CDC's debuggability is real and already paying off.
 
 ## Building
 

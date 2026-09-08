@@ -509,13 +509,13 @@ function Home() {
               </div>
               <div className="hardware-list">
                 {!picoBridge.isSupported ? (
-                  <p className="protect-line">Web Serial wird von diesem Browser nicht unterstützt — Chrome oder Edge verwenden.</p>
+                  <p className="protect-line">Web Serial is not supported in this browser — use Chrome or Edge.</p>
                 ) : picoBridge.status === 'connecting' ? (
-                  <p className="protect-line">Verbinde…</p>
+                  <p className="protect-line">Connecting…</p>
                 ) : picoBridge.status === 'connected' ? (
                   <>
                     {picoBridge.devices.length === 0 ? (
-                      <p className="protect-line">Kein Gerät auf dem Bus erkannt.</p>
+                      <p className="protect-line">No device detected on the bus.</p>
                     ) : (
                       picoBridge.devices.map((device) => (
                         <div className="hardware-stat" key={device.startAddress}>
@@ -529,7 +529,7 @@ function Home() {
                       ))
                     )}
                     <button className="action-button" onClick={() => void picoBridge.disconnect()} data-testid="button-disconnect-pico">
-                      <span>Trennen</span>
+                      <span>Disconnect</span>
                     </button>
                   </>
                 ) : (
@@ -538,7 +538,7 @@ function Home() {
                       <p className="protect-line">{picoBridge.errorMessage}</p>
                     )}
                     <button className="action-button" onClick={() => void picoBridge.connect()} data-testid="button-connect-pico">
-                      <Network size={14} /><span>Mit Pico-Bridge verbinden</span>
+                      <Network size={14} /><span>Connect to Pico bridge</span>
                     </button>
                   </>
                 )}
