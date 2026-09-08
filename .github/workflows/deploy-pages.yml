@@ -3,6 +3,14 @@ name: Deploy SaveKey-Manager to GitHub Pages
 on:
   push:
     branches: [main]
+    paths:
+      - artifacts/eeprom-explorer/**
+      - lib/api-client-react/**
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - package.json
+      - .npmrc
+      - .github/workflows/deploy-pages.yml
   workflow_dispatch: {}
 
 permissions:
