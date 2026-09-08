@@ -248,9 +248,14 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 
 .page-map { display:grid; grid-template-columns:repeat(32,1fr); gap:2px; padding:15px; }
 .page-cell { aspect-ratio:1; padding:0; border:1px solid rgba(79,90,137,.25); border-radius:1px; background:rgba(255,255,255,.4); transition:border-color .1s ease; }
-.page-cell.status-allocated { background:#ffb000; border-color:#a86e00; }
-.page-cell.status-reserved { background:#57c9c0; border-color:#2f8f88; }
-.page-cell.status-abandoned { background:#c94f6a; border-color:#8a1e3d; }
+/* Reserved-but-empty slots get a light tint of their status color; only slots
+   that actually carry save data on this device get the solid fill. */
+.page-cell.status-allocated { background:rgba(255,176,0,.16); border-color:#a86e00; }
+.page-cell.status-allocated.has-data { background:#ffb000; }
+.page-cell.status-reserved { background:rgba(87,201,192,.16); border-color:#2f8f88; }
+.page-cell.status-reserved.has-data { background:#57c9c0; }
+.page-cell.status-abandoned { background:rgba(201,79,106,.16); border-color:#8a1e3d; }
+.page-cell.status-abandoned.has-data { background:#c94f6a; }
 .page-cell.status-scratch { background-color:rgba(83,96,142,.3); background-image:repeating-linear-gradient(45deg, rgba(83,96,142,.5) 0, rgba(83,96,142,.5) 1px, transparent 1px, transparent 3px); }
 .page-cell.status-free { background:rgba(255,255,255,.4); }
 button.page-cell { cursor:pointer; }
@@ -262,6 +267,8 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .tag.status-allocated { color:#8a4b00; border-color:#a86e00; background:#ffdb94; }
 .tag.status-reserved { color:#1c6a63; border-color:#2f8f88; background:#bdeee8; }
 .tag.status-abandoned { color:#76233a; border-color:#8a1e3d; background:#f0c3cf; }
+.tag.has-data-tag { color:#8a4b00; border-color:#a86e00; background:#ffdb94; font-weight:600; }
+.tag.no-data-tag { color:#756b56; border-color:rgba(79,90,137,.35); background:transparent; }
 .preview-file-title small.status-allocated { color:#8a4b00; border-color:#a86e00; background:#ffdb94; text-transform:uppercase; }
 .preview-file-title small.status-reserved { color:#1c6a63; border-color:#2f8f88; background:#bdeee8; text-transform:uppercase; }
 .preview-file-title small.status-abandoned { color:#76233a; border-color:#8a1e3d; background:#f0c3cf; text-transform:uppercase; }
@@ -303,6 +310,11 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .allocation-detail { color:#303b72; font:10px/1.7 var(--app-font-mono); }
 .allocation-detail .detail-row { display:flex; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px solid rgba(79,90,137,.18); }
 .allocation-detail .detail-row span:first-child { color:#53608e; text-transform:uppercase; font-size:9px; letter-spacing:.06em; }
+.allocation-detail .detail-data-row { padding:8px 9px; margin-bottom:4px; border-bottom:0; border-radius:1px; }
+.allocation-detail .detail-data-row.has-data { background:rgba(255,176,0,.16); }
+.allocation-detail .detail-data-row.has-data span:last-child { color:#8a4b00; font-weight:600; }
+.allocation-detail .detail-data-row.no-data { background:rgba(83,96,142,.1); }
+.allocation-detail .detail-data-row.no-data span:last-child { color:#756b56; }
 .allocation-detail .detail-notes { margin-top:11px; padding:8px 9px; background:rgba(255,176,0,.12); border-left:3px solid #ffb000; line-height:1.55; }
 .allocation-detail .detail-links { margin-top:11px; display:grid; gap:6px; }
 .allocation-detail .detail-links a { color:#1c4fae; text-decoration:underline; word-break:break-all; font-size:9px; }

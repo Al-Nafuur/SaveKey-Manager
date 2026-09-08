@@ -63,6 +63,9 @@ type AllocationEntry = {
   verified?: string;
   notes?: string;
   urls?: string[];
+  // Whether THIS particular demo stick actually has save data written in this
+  // slot, vs. the slot merely being claimed/reserved by the registry above.
+  hasSaveData: boolean;
 };
 
 const queryClient = new QueryClient();
@@ -78,23 +81,26 @@ const initialDrives: Drive[] = [
 ];
 
 // A curated, real subset of https://github.com/atariage-community/savekey-allocation-list/blob/main/allocations.yaml
+// `hasSaveData` is this demo's own invention: which of these claimed slots this
+// particular (simulated) stick actually has bytes written in, vs. slots that
+// are merely reserved by the registry but never played/saved to on this unit.
 const allocationEntries: AllocationEntry[] = [
-  { id: 'system-settings', title: 'System Settings', kind: 'system', status: 'allocated', pageStart: 0x000, pageEnd: 0x000, notes: 'TV mode' },
-  { id: 'man-goes-down', title: 'Man Goes Down', developer: 'Alex Herbert', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x001, pageEnd: 0x001, verified: '2026-08-17', notes: "WIP, never finalized nor published 'officially'. Arguably, should retain its slot due to wide adoption.", urls: ['https://forums.atariage.com/topic/53689-my-1st-atari-2600-game-man-goes-down/page/18/'] },
-  { id: 'fall-down', title: 'Fall Down', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x002, pageEnd: 0x002, verified: '2026-08-17', urls: ['https://store.atariage.com/products/fall-down-atari-2600'] },
-  { id: 'go-fish', title: 'Go Fish!', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x003, pageEnd: 0x003, verified: '2026-08-17', urls: ['https://store.atariage.com/products/go-fish-atari-2600'] },
-  { id: 'strat-o-gems-deluxe', title: 'Strat-O-Gems Deluxe', developer: 'John Payson', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x004, pageEnd: 0x007, verified: '2026-08-18' },
-  { id: 'astar', title: 'AStar', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x008, pageEnd: 0x008, verified: '2026-08-18' },
-  { id: 'bonq', title: 'bonQ', developer: 'Ken Siders', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x009, pageEnd: 0x00a, verified: '2026-08-18' },
-  { id: 'lead-pitch-omicron-palomino', title: "Lead / Pitch'n'Catch / Omicron / Palomino", developer: 'Simone Serra', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00b, pageEnd: 0x00b, verified: '2026-08-19' },
-  { id: 'elevators-amiss', title: 'Elevators Amiss', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00c, pageEnd: 0x00c, verified: '2026-08-17' },
-  { id: 'juno-first', title: 'Juno First', developer: 'Chris Walton', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00d, pageEnd: 0x00d, verified: '2026-08-17' },
-  { id: 'karate-master', title: 'Karate Master', developer: 'Greg Kennedy', platform: 'Atari 2600', kind: 'game', status: 'reserved', pageStart: 0x00e, pageEnd: 0x00e, verified: '2026-08-18', notes: 'Never released on cart, last update 2009, abandoned?' },
-  { id: 'fate-of-a-bait', title: 'Fate Of A Bait', developer: 'Christian Hammers', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00f, pageEnd: 0x00f, verified: '2026-08-19', notes: "Has taken the slot of Mark Ball's 'Halloween game TBA', which apparently never was" },
-  { id: 'duck-attack', title: 'Duck Attack!', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x010, pageEnd: 0x011, verified: '2026-08-17' },
-  { id: 'monster', title: 'Monster!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'reserved', pageStart: 0x012, pageEnd: 0x012, verified: '2026-08-17', notes: 'Never released on cart, abandoned?' },
-  { id: 'worm', title: 'Worm!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x013, pageEnd: 0x013, verified: '2026-08-17' },
-  { id: 'indenture-dragon-attack', title: 'Indenture / Dragon Attack', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'abandoned', pageStart: 0x014, pageEnd: 0x015, verified: '2026-08-31' },
+  { id: 'system-settings', title: 'System Settings', kind: 'system', status: 'allocated', pageStart: 0x000, pageEnd: 0x000, notes: 'TV mode', hasSaveData: true },
+  { id: 'man-goes-down', title: 'Man Goes Down', developer: 'Alex Herbert', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x001, pageEnd: 0x001, verified: '2026-08-17', notes: "WIP, never finalized nor published 'officially'. Arguably, should retain its slot due to wide adoption.", urls: ['https://forums.atariage.com/topic/53689-my-1st-atari-2600-game-man-goes-down/page/18/'], hasSaveData: false },
+  { id: 'fall-down', title: 'Fall Down', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x002, pageEnd: 0x002, verified: '2026-08-17', urls: ['https://store.atariage.com/products/fall-down-atari-2600'], hasSaveData: true },
+  { id: 'go-fish', title: 'Go Fish!', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x003, pageEnd: 0x003, verified: '2026-08-17', urls: ['https://store.atariage.com/products/go-fish-atari-2600'], hasSaveData: false },
+  { id: 'strat-o-gems-deluxe', title: 'Strat-O-Gems Deluxe', developer: 'John Payson', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x004, pageEnd: 0x007, verified: '2026-08-18', hasSaveData: false },
+  { id: 'astar', title: 'AStar', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x008, pageEnd: 0x008, verified: '2026-08-18', hasSaveData: true },
+  { id: 'bonq', title: 'bonQ', developer: 'Ken Siders', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x009, pageEnd: 0x00a, verified: '2026-08-18', hasSaveData: false },
+  { id: 'lead-pitch-omicron-palomino', title: "Lead / Pitch'n'Catch / Omicron / Palomino", developer: 'Simone Serra', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00b, pageEnd: 0x00b, verified: '2026-08-19', hasSaveData: false },
+  { id: 'elevators-amiss', title: 'Elevators Amiss', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00c, pageEnd: 0x00c, verified: '2026-08-17', hasSaveData: true },
+  { id: 'juno-first', title: 'Juno First', developer: 'Chris Walton', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00d, pageEnd: 0x00d, verified: '2026-08-17', hasSaveData: false },
+  { id: 'karate-master', title: 'Karate Master', developer: 'Greg Kennedy', platform: 'Atari 2600', kind: 'game', status: 'reserved', pageStart: 0x00e, pageEnd: 0x00e, verified: '2026-08-18', notes: 'Never released on cart, last update 2009, abandoned?', hasSaveData: false },
+  { id: 'fate-of-a-bait', title: 'Fate Of A Bait', developer: 'Christian Hammers', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00f, pageEnd: 0x00f, verified: '2026-08-19', notes: "Has taken the slot of Mark Ball's 'Halloween game TBA', which apparently never was", hasSaveData: false },
+  { id: 'duck-attack', title: 'Duck Attack!', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x010, pageEnd: 0x011, verified: '2026-08-17', hasSaveData: true },
+  { id: 'monster', title: 'Monster!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'reserved', pageStart: 0x012, pageEnd: 0x012, verified: '2026-08-17', notes: 'Never released on cart, abandoned?', hasSaveData: false },
+  { id: 'worm', title: 'Worm!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x013, pageEnd: 0x013, verified: '2026-08-17', hasSaveData: true },
+  { id: 'indenture-dragon-attack', title: 'Indenture / Dragon Attack', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'abandoned', pageStart: 0x014, pageEnd: 0x015, verified: '2026-08-31', hasSaveData: false },
 ];
 
 const pageOwners: (AllocationEntry | null)[] = Array.from({ length: TOTAL_PAGES }, () => null);
@@ -193,18 +199,20 @@ function chipLabel(drive: Drive) {
 
 function driveUsedBytes(drive: Drive, files: TinyElfFile[]) {
   if (drive.mode === 'savekey') {
-    const claimedPages = allocationEntries.reduce((total, entry) => total + (entry.pageEnd - entry.pageStart + 1), 0);
-    return claimedPages * 64;
+    // Only pages that actually have save data written on this device count as
+    // "used" — a reserved-but-empty slot isn't occupying real storage yet.
+    const writtenPages = allocationEntries.filter((entry) => entry.hasSaveData).reduce((total, entry) => total + (entry.pageEnd - entry.pageStart + 1), 0);
+    return writtenPages * 64;
   }
   return files.filter((file) => file.driveId === drive.id).reduce((total, file) => total + file.size, 0);
 }
 
 function Home() {
   const [drives, setDrives] = useState(initialDrives);
-  const [activeDriveId, setActiveDriveId] = useState('E1');
+  const [activeDriveId, setActiveDriveId] = useState('E2');
   const [files, setFiles] = useState(initialTinyElfFiles);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
-  const [selectedAllocationId, setSelectedAllocationId] = useState<string | null>('man-goes-down');
+  const [selectedAllocationId, setSelectedAllocationId] = useState<string | null>('duck-attack');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'icons'>('list');
   const [previewMode, setPreviewMode] = useState<'preview' | 'hex'>('preview');
@@ -249,7 +257,7 @@ function Home() {
   const setDriveMode = (driveId: string, mode: DriveMode) => {
     setDrives((items) => items.map((item) => (item.id === driveId ? { ...item, mode } : item)));
     setSelectedFileId(null);
-    setSelectedAllocationId(mode === 'savekey' ? 'man-goes-down' : null);
+    setSelectedAllocationId(mode === 'savekey' ? 'duck-attack' : null);
     const drive = drives.find((item) => item.id === driveId);
     pushActivity('Format changed', `${drive?.label ?? driveId} → ${mode === 'savekey' ? 'SaveKey allocation list' : 'TinyELF Basic filesystem'}`);
   };
@@ -398,7 +406,7 @@ function Home() {
               <div className="panel-head">
                 <div className="panel-title">
                   <LayoutGrid size={18} className="folder-icon" />
-                  <div><h2>{activeDrive.label} · Allocation map</h2><p>{visibleAllocations.length} of {allocationEntries.length} entries · 512 pages</p></div>
+                  <div><h2>{activeDrive.label} · Allocation map</h2><p>{allocationEntries.filter((entry) => entry.hasSaveData).length} of {allocationEntries.length} known slots have data on this stick</p></div>
                 </div>
                 <span className="folder-count">{allocationEntries.length}</span>
               </div>
@@ -406,26 +414,30 @@ function Home() {
                 {Array.from({ length: TOTAL_PAGES }, (_, page) => {
                   const status = pageStatus(page);
                   const owner = pageOwners[page];
+                  const dataTitle = owner
+                    ? `${hex(page, 3)} · ${owner.title} — ${owner.hasSaveData ? 'save data present' : 'reserved, no data on this device'}`
+                    : `${hex(page, 3)} · ${status}`;
                   return (
                     <button
                       key={page}
-                      className={`page-cell status-${status} ${owner && owner.id === selectedAllocationId ? 'selected' : ''}`}
+                      className={`page-cell status-${status} ${owner?.hasSaveData ? 'has-data' : ''} ${owner && owner.id === selectedAllocationId ? 'selected' : ''}`}
                       onClick={() => selectPage(page)}
-                      title={owner ? `${hex(page, 3)} · ${owner.title}` : `${hex(page, 3)} · ${status}`}
+                      title={dataTitle}
                       data-testid={`page-cell-${page}`}
                     />
                   );
                 })}
               </div>
               <div className="page-map-legend">
-                <span><i className="page-cell status-allocated" />allocated</span>
-                <span><i className="page-cell status-reserved" />reserved</span>
+                <span><i className="page-cell status-allocated has-data" />has data</span>
+                <span><i className="page-cell status-allocated" />reserved, no data</span>
+                <span><i className="page-cell status-reserved" />reserved (unreleased)</span>
                 <span><i className="page-cell status-abandoned" />abandoned</span>
                 <span><i className="page-cell status-scratch" />scratchpad</span>
                 <span><i className="page-cell status-free" />free</span>
               </div>
               <table className="file-table">
-                <thead><tr><th style={{ width: '38%' }}>Title</th><th style={{ width: '20%' }}>Developer</th><th style={{ width: '16%' }}>Platform</th><th style={{ width: '14%' }}>Pages</th><th>Status</th></tr></thead>
+                <thead><tr><th style={{ width: '34%' }}>Title</th><th style={{ width: '18%' }}>Developer</th><th style={{ width: '14%' }}>Platform</th><th style={{ width: '12%' }}>Pages</th><th style={{ width: '12%' }}>Status</th><th>On device</th></tr></thead>
                 <tbody>
                   {visibleAllocations.map((entry) => (
                     <tr className={`file-row ${selectedAllocationId === entry.id ? 'selected' : ''}`} key={entry.id} onClick={() => setSelectedAllocationId(entry.id)} data-testid={`row-allocation-${entry.id}`}>
@@ -434,6 +446,7 @@ function Home() {
                       <td>{entry.platform ?? '—'}</td>
                       <td>{hex(entry.pageStart, 3)}–{hex(entry.pageEnd, 3)}</td>
                       <td><span className={`tag status-${entry.status}`}>{entry.status}</span></td>
+                      <td>{entry.hasSaveData ? <span className="tag has-data-tag">data</span> : <span className="tag no-data-tag">empty</span>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -480,7 +493,7 @@ function Home() {
                 <div className="capacity-block">
                   <div className="capacity-line"><span>used / free</span><strong>{formatSize(usedBytes)} / {formatSize(activeDrive.totalBytes - usedBytes)}</strong></div>
                   <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
-                  <div className="capacity-line"><span>{isSaveKeyView ? 'registry entries' : 'directory entries'}</span><strong>{isSaveKeyView ? `${allocationEntries.length} entries · 512 pages` : `${driveFiles.length} files`}</strong></div>
+                  <div className="capacity-line"><span>{isSaveKeyView ? 'slots with data' : 'directory entries'}</span><strong>{isSaveKeyView ? `${allocationEntries.filter((entry) => entry.hasSaveData).length} of ${allocationEntries.length} known slots` : `${driveFiles.length} files`}</strong></div>
                 </div>
                 <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
               </div>
@@ -495,6 +508,7 @@ function Home() {
                   ) : (
                     <div className="allocation-detail">
                       <div className="preview-file-title"><LayoutGrid size={15} />{selectedAllocation.title}<small className={`status-${selectedAllocation.status}`}>{selectedAllocation.status}</small></div>
+                      <div className={`detail-row detail-data-row ${selectedAllocation.hasSaveData ? 'has-data' : 'no-data'}`}><span>On this device</span><span>{selectedAllocation.hasSaveData ? 'Save data present' : 'No data — slot reserved only'}</span></div>
                       <div className="detail-row"><span>Kind</span><span>{selectedAllocation.kind}</span></div>
                       {selectedAllocation.developer && <div className="detail-row"><span>Developer</span><span>{selectedAllocation.developer}</span></div>}
                       {selectedAllocation.platform && <div className="detail-row"><span>Platform</span><span>{selectedAllocation.platform}</span></div>}
