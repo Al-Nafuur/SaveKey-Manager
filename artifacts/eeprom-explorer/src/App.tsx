@@ -197,6 +197,23 @@ function chipLabel(drive: Drive) {
   return `64 KB block · 2nd EEPROM (${hex(drive.address)})`;
 }
 
+// Derived from "FileSystem Design ChatGPT.txt" (repo root): sector size tracks
+// the EEPROM's physical page size so one FS sector fits one page write.
+// Directory sizing and the exact 64B/128B cutoff are explicitly still open in
+// that draft — these are today's best-guess numbers, not a finalized spec.
+function tinyElfLayout(drive: Drive) {
+  const sectorSize = drive.totalBytes <= 32 * 1024 ? 64 : 128; // 24LC256 page = 64B, 24LC512 page = 128B
+  const totalSectors = drive.totalBytes / sectorSize;
+  const dataPerSector = sectorSize - 3; // DOS 2.x-style: next sector + file # + byte count
+  const entriesPerSector = Math.floor(sectorSize / 16); // 16-byte directory entries
+  const directorySectors = drive.totalBytes <= 32 * 1024 ? 4 : 8;
+  const maxFiles = directorySectors * entriesPerSector;
+  const vtocSectors = Math.max(1, Math.ceil(Math.ceil(totalSectors / 8) / sectorSize));
+  const headerSectors = 1;
+  const overheadBytes = (headerSectors + vtocSectors + directorySectors) * sectorSize;
+  return { sectorSize, totalSectors, dataPerSector, directorySectors, maxFiles, overheadBytes, overheadPercent: (overheadBytes / drive.totalBytes) * 100 };
+}
+
 function driveUsedBytes(drive: Drive, files: TinyElfFile[]) {
   if (drive.mode === 'savekey') {
     // Only pages that actually have save data written on this device count as
@@ -495,6 +512,17 @@ function Home() {
                   <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
                   <div className="capacity-line"><span>{isSaveKeyView ? 'slots with data' : 'directory entries'}</span><strong>{isSaveKeyView ? `${allocationEntries.filter((entry) => entry.hasSaveData).length} of ${allocationEntries.length} known slots` : `${driveFiles.length} files`}</strong></div>
                 </div>
+                {!isSaveKeyView && (() => {
+                  const layout = tinyElfLayout(activeDrive);
+                  return (
+                    <div className="capacity-block" title="Derived from the TinyELF FS design draft — sector-size cutoff and directory sizing are still open there">
+                      <div className="capacity-line"><span>TinyELF FS sectors</span><strong>{layout.totalSectors} × {layout.sectorSize} B</strong></div>
+                      <div className="capacity-line"><span>sector data</span><strong>{layout.dataPerSector} B (3 B chain/ctrl)</strong></div>
+                      <div className="capacity-line"><span>directory</span><strong>{layout.directorySectors} sectors · {layout.maxFiles} files max</strong></div>
+                      <div className="capacity-line"><span>fs overhead</span><strong>{formatSize(layout.overheadBytes)} ({layout.overheadPercent.toFixed(1)}%)</strong></div>
+                    </div>
+                  );
+                })()}
                 <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
               </div>
             </section>
