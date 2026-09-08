@@ -28,6 +28,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
+import { usePicoBridge } from '@/hooks/use-pico-bridge';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -237,6 +238,7 @@ function Home() {
   const [dialog, setDialog] = useState<'delete' | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const picoBridge = usePicoBridge();
 
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
@@ -500,6 +502,49 @@ function Home() {
           )}
 
           <aside className="right-rail">
+            <section className="hardware-panel" data-testid="panel-pico-bridge">
+              <div className="hardware-heading">
+                <div><h2>Live hardware</h2><p>Pico bridge (walking skeleton)</p></div>
+                {picoBridge.status === 'connected' && <span className="connected-badge"><i /> connected</span>}
+              </div>
+              <div className="hardware-list">
+                {!picoBridge.isSupported ? (
+                  <p className="protect-line">Web Serial wird von diesem Browser nicht unterstützt — Chrome oder Edge verwenden.</p>
+                ) : picoBridge.status === 'connecting' ? (
+                  <p className="protect-line">Verbinde…</p>
+                ) : picoBridge.status === 'connected' ? (
+                  <>
+                    {picoBridge.devices.length === 0 ? (
+                      <p className="protect-line">Kein Gerät auf dem Bus erkannt.</p>
+                    ) : (
+                      picoBridge.devices.map((device) => (
+                        <div className="hardware-stat" key={device.startAddress}>
+                          <span>
+                            {device.addressCount === 1
+                              ? hex(device.startAddress)
+                              : `${hex(device.startAddress)}–${hex(device.startAddress + device.addressCount - 1)}`}
+                          </span>
+                          <strong>{formatSize(device.capacityBytes)}</strong>
+                        </div>
+                      ))
+                    )}
+                    <button className="action-button" onClick={() => void picoBridge.disconnect()} data-testid="button-disconnect-pico">
+                      <span>Trennen</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {picoBridge.status === 'error' && picoBridge.errorMessage && (
+                      <p className="protect-line">{picoBridge.errorMessage}</p>
+                    )}
+                    <button className="action-button" onClick={() => void picoBridge.connect()} data-testid="button-connect-pico">
+                      <Network size={14} /><span>Mit Pico-Bridge verbinden</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            </section>
+
             <section className="hardware-panel" id="hardware-status" data-testid="panel-hardware-status">
                <div className="hardware-heading"><div><h2>Bus diagnostics</h2><p>live I²C telemetry</p></div><span className="connected-badge"><i /> online</span></div>
               <div className="hardware-list">

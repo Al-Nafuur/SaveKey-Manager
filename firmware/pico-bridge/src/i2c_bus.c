@@ -14,10 +14,24 @@ void i2c_bus_init(void) {
 }
 
 bool i2c_bus_probe(uint8_t addr) {
+    // Deliberately a 1-byte WRITE, not len=0: a 0-length write never puts
+    // anything on the bus at all (the SDK's byte loop is simply skipped),
+    // so it always "succeeds" regardless of whether a device is there.
+    //
+    // Deliberately timeout-bounded, not plain i2c_write_blocking: on real
+    // hardware, addressing a genuinely absent device (open bus, e.g.
+    // 0x51-0x53 here) can leave the RP2040's I2C block spinning forever in
+    // its internal wait-for-TX_EMPTY loop — that plain blocking call has no
+    // timeout at all, so one empty address freezes the whole firmware
+    // (confirmed: disabling this probe call restored serial output). A
+    // bounded timeout lets a stuck transaction be treated as "no device"
+    // instead of hanging.
+    //
+    // The single dummy byte only ever loads the EEPROM's address-pointer
+    // high byte and is followed by a STOP before any data byte would be
+    // written, so it has no side effects on stored contents.
     uint8_t dummy = 0;
-    // A 0-length write still addresses the device and waits for an ACK/NACK,
-    // which is the standard way to probe an I2C bus without side effects.
-    int result = i2c_write_blocking(I2C_BUS_INSTANCE, addr, &dummy, 0, false);
+    int result = i2c_write_timeout_us(I2C_BUS_INSTANCE, addr, &dummy, 1, false, 10000);
     return result >= 0;
 }
 
