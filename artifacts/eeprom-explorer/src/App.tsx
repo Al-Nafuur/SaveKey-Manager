@@ -32,7 +32,7 @@ import { usePicoBridge } from '@/hooks/use-pico-bridge';
 import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
 import { computeTinyElfLayout, formatDevice, readTinyElfHeader, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
-import { saveFile } from '@/lib/tinyelf-save';
+import { loadFileContent, saveFile } from '@/lib/tinyelf-save';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -52,6 +52,9 @@ type TinyElfFile = {
   attributes: string;
   bytes: number[];
   driveId: string;
+  // Real (non-demo) files only: the sector-chain head, so content can be
+  // lazily loaded on selection instead of eagerly for every listed file.
+  startSector?: number;
 };
 type ActivityRecord = { id: number; time: string; message: string; detail?: string };
 type AllocationKind = 'system' | 'game';
@@ -339,7 +342,10 @@ function Home() {
         for (const entry of entries) {
           realFiles.push({
             id: `${id}-${entry.startSector}`,
-            name: entry.name,
+            // The file table only ever renders `name` (see the demo data
+            // convention: "AUTORUN.BAS", not "AUTORUN" + separate ".BAS") —
+            // `extension` alone is just for the icon/search match.
+            name: entry.extension ? `${entry.name}.${entry.extension}` : entry.name,
             extension: entry.extension,
             // Approximate: real size needs the last sector's actual byte
             // count (per-sector control info), not read yet.
@@ -348,6 +354,7 @@ function Home() {
             attributes: entry.locked ? 'R/O' : 'R/W',
             driveId: id,
             bytes: [],
+            startSector: entry.startSector,
           });
         }
       }
@@ -382,6 +389,37 @@ function Home() {
       cancelled = true;
     };
   }, [picoBridge.status, picoBridge.devices, picoBridge.bridge, loadLiveData]);
+
+  // Lazily loads a real file's actual content the moment it's selected,
+  // instead of eagerly for every listed file — walks the sector chain via
+  // loadFileContent(). Demo files already carry their bytes and are
+  // skipped (no startSector).
+  useEffect(() => {
+    const bridge = picoBridge.bridge;
+    if (!selectedFile || !bridge) return;
+    const startSector = selectedFile.startSector;
+    if (startSector === undefined || selectedFile.bytes.length > 0) return;
+    const live = liveDrives[selectedFile.driveId];
+    if (!live) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const content = await loadFileContent(bridge, live.device, live.layout, startSector);
+        if (cancelled) return;
+        const fileId = selectedFile.id;
+        setFiles((items) =>
+          items.map((item) => (item.id === fileId ? { ...item, bytes: Array.from(content), size: content.length } : item)),
+        );
+      } catch (error) {
+        pushActivity('Load failed', error instanceof Error ? error.message : String(error));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFile, liveDrives, picoBridge.bridge]);
 
   const selectDrive = (driveId: string) => {
     if (driveId === activeDriveId) return;

@@ -8,6 +8,7 @@ import type { DetectedDevice, PicoBridge } from './pico-bridge';
 import {
   SECTOR_CONTROL_BYTES,
   SECTOR_LINK_NONE,
+  decodeSectorControl,
   encodeSectorControl,
   readDeviceBytes,
   resolveDeviceAddress,
@@ -142,4 +143,43 @@ export async function saveFile(
   await writeSectors(bridge, device, layout.directoryStart + entrySectorIndex, patchedSector, layout.sectorSize);
 
   return { slot, fileNumber, startSector: sectors[0], sectorCount: sectors.length, name, extension };
+}
+
+// Walks the sector chain starting at `startSector`, using each sector's
+// trailing control info (bytesUsed + next-sector pointer) to know exactly
+// where the real content ends and where to go next — LOAD's counterpart to
+// SAVE's chain-writing above.
+export async function loadFileContent(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  layout: TinyElfLayout,
+  startSector: number,
+): Promise<Uint8Array> {
+  const dataBytesPerSector = layout.sectorSize - SECTOR_CONTROL_BYTES;
+  const chunks: Uint8Array[] = [];
+  const visited = new Set<number>();
+  let sector = startSector;
+
+  while (sector !== SECTOR_LINK_NONE) {
+    if (visited.has(sector)) throw new Error(`Sector chain loop detected at sector ${sector}.`);
+    visited.add(sector);
+
+    const sectorBytes = await readDeviceBytes(bridge, device, sector * layout.sectorSize, layout.sectorSize);
+    const control = decodeSectorControl(
+      sectorBytes[dataBytesPerSector],
+      sectorBytes[dataBytesPerSector + 1],
+      sectorBytes[dataBytesPerSector + 2],
+    );
+    chunks.push(sectorBytes.subarray(0, control.bytesUsed));
+    sector = control.nextSector;
+  }
+
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
 }
