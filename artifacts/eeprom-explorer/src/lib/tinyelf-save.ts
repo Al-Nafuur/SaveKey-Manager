@@ -145,6 +145,39 @@ export async function saveFile(
   return { slot, fileNumber, startSector: sectors[0], sectorCount: sectors.length, name, extension };
 }
 
+// Cheaper counterpart to loadFileContent() for when only the exact byte
+// count is needed (e.g. a directory listing): walks the same sector chain,
+// but reads just the 3 trailing control bytes per sector instead of the
+// whole sector, since only bytesUsed/nextSector are needed here.
+export async function computeExactFileSize(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  layout: TinyElfLayout,
+  startSector: number,
+): Promise<number> {
+  const dataBytesPerSector = layout.sectorSize - SECTOR_CONTROL_BYTES;
+  const visited = new Set<number>();
+  let sector = startSector;
+  let total = 0;
+
+  while (sector !== SECTOR_LINK_NONE) {
+    if (visited.has(sector)) throw new Error(`Sector chain loop detected at sector ${sector}.`);
+    visited.add(sector);
+
+    const control = await readDeviceBytes(
+      bridge,
+      device,
+      sector * layout.sectorSize + dataBytesPerSector,
+      SECTOR_CONTROL_BYTES,
+    );
+    const decoded = decodeSectorControl(control[0], control[1], control[2]);
+    total += decoded.bytesUsed;
+    sector = decoded.nextSector;
+  }
+
+  return total;
+}
+
 // Walks the sector chain starting at `startSector`, using each sector's
 // trailing control info (bytesUsed + next-sector pointer) to know exactly
 // where the real content ends and where to go next — LOAD's counterpart to

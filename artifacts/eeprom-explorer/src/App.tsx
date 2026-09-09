@@ -233,14 +233,23 @@ function tinyElfLayout(drive: Drive) {
   return { sectorSize, totalSectors, dataPerSector, directorySectors, maxFiles, overheadBytes, overheadPercent: (overheadBytes / drive.totalBytes) * 100 };
 }
 
-function driveUsedBytes(drive: Drive, files: TinyElfFile[]) {
+// `systemOverheadBytes`: boot/VTOC/directory sectors on a real TinyELF
+// device — permanently unavailable to files, but not reflected in any
+// TinyElfFile entry, so callers must add it explicitly (see
+// systemOverheadBytes() in Home()).
+function driveUsedBytes(drive: Drive, files: TinyElfFile[], systemOverheadBytes = 0) {
   if (drive.mode === 'savekey') {
     // Only pages that actually have save data written on this device count as
     // "used" — a reserved-but-empty slot isn't occupying real storage yet.
     const writtenPages = allocationEntries.filter((entry) => entry.hasSaveData).reduce((total, entry) => total + (entry.pageEnd - entry.pageStart + 1), 0);
     return writtenPages * 64;
   }
-  return files.filter((file) => file.driveId === drive.id).reduce((total, file) => total + file.size, 0);
+  // A file's size here is always whole sectors (sectorCount x sectorSize,
+  // never the exact byte count) — a sector holding even one byte of a file
+  // is entirely unavailable to any other file, so free space must be
+  // computed in whole sectors too, not fractional bytes.
+  const filesBytes = files.filter((file) => file.driveId === drive.id).reduce((total, file) => total + file.size, 0);
+  return filesBytes + systemOverheadBytes;
 }
 
 function Home() {
@@ -280,7 +289,11 @@ function Home() {
       ),
     [query],
   );
-  const usedBytes = driveUsedBytes(activeDrive, files);
+  const systemOverheadBytes = (driveId: string) => {
+    const live = liveDrives[driveId];
+    return live ? live.layout.dataStart * live.layout.sectorSize : 0;
+  };
+  const usedBytes = driveUsedBytes(activeDrive, files, systemOverheadBytes(activeDrive.id));
   const formatLayout = useMemo(() => computeTinyElfLayout(formatCapacityKiB * 1024), [formatCapacityKiB]);
 
   const pushActivity = (message: string, detail?: string) => {
@@ -347,8 +360,13 @@ function Home() {
             // `extension` alone is just for the icon/search match.
             name: entry.extension ? `${entry.name}.${entry.extension}` : entry.name,
             extension: entry.extension,
-            // Approximate: real size needs the last sector's actual byte
-            // count (per-sector control info), not read yet.
+            // Approximate (sector count x sector size) — matches how
+            // classic DOS 2.x catalog listings work too (directory only
+            // ever stores sector count, never exact bytes). Getting the
+            // exact size means walking every file's sector chain, which
+            // doesn't scale to a large directory if done eagerly for the
+            // whole listing — see computeExactFileSize(), used lazily
+            // instead when a file is actually opened, below.
             size: entry.sectorCount * layout.sectorSize,
             modified: '',
             attributes: entry.locked ? 'R/O' : 'R/W',
@@ -536,7 +554,7 @@ function Home() {
         </nav>
         <div className="drive-list">
           {drives.map((drive) => {
-            const driveUsed = driveUsedBytes(drive, files);
+            const driveUsed = driveUsedBytes(drive, files, systemOverheadBytes(drive.id));
             return (
               <div className={`drive-card ${drive.id === activeDriveId ? 'active' : ''}`} key={drive.id} onClick={() => selectDrive(drive.id)} data-testid={`card-drive-${drive.id}`}>
                 <div className="drive-mini-head">
