@@ -892,7 +892,7 @@ function Home() {
                 <div className="format-summary-line"><span>Data region</span><strong>from sector {formatLayout.dataStart}</strong></div>
               </div>
               {formatStatus === 'error' && <div className="warning-copy">{formatMessage}</div>}
-              {(formatStatus === 'running' || formatStatus === 'done') && <p className="protect-line">{formatMessage}</p>}
+              {(formatStatus === 'running' || formatStatus === 'done') && <p className="format-status">{formatMessage}</p>}
               <div className="modal-actions">
                 <button className="action-button" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-cancel-format">Cancel</button>
                 <button className="action-button danger" onClick={() => void runFormat()} disabled={formatStatus === 'running' || formatStatus === 'done'} data-testid="button-confirm-format">
