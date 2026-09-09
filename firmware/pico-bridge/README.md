@@ -13,9 +13,20 @@ I2C0 on the Pico's physical header pins 6/7, which are GPIO4 (SDA) and GPIO5 (SC
 ## Status
 
 - [x] I²C driver: init, probe, write, read ([src/i2c_bus.c](src/i2c_bus.c))
-- [x] Bring-up firmware ([src/main.c](src/main.c)): scans 0x50–0x57 every few seconds and prints the results over USB CDC (virtual COM port) — flash this now to sanity-check the wiring, no host app needed yet.
-- [ ] USB command protocol (PING / GET_INFO / I2C_PROBE / I2C_READ / I2C_WRITE) — transport decided (below), protocol design itself still to do.
 - [x] Desktop/browser-side transport: **CDC over Web Serial** (decided 2026-09-09)
+- [x] USB command protocol ([src/command.c](src/command.c)): PING / SCAN / READ / WRITE, see below. `main.c` no longer free-runs a scan loop — it just waits for commands now.
+
+### Command protocol
+
+Text command lines (newline-terminated) over the USB CDC port; binary payload bytes for READ/WRITE data (no encoding overhead, and payload contents aren't meant to be eyeballed anyway — only the command/response lines are).
+
+- `PING` → `OK pico-bridge`
+- `SCAN` → zero or more `ACK <addr_hex2>` lines (only for addresses that ACK), then `OK`
+- `READ <addr_hex2> <memaddr_hex4> <len_dec>` → `OK <len_dec>` immediately followed by exactly `len` raw bytes, or `ERR <reason>` (no data) if the request itself is invalid. `len` is only bounded by the 16-bit address space (up to 65536 bytes in one call) — reads aren't page-limited. A mid-stream I2C failure (rare, only possible once the address has already ACKed) pads the remainder with zero bytes rather than aborting, since the byte count was already committed via the `OK` header.
+- `WRITE <addr_hex2> <memaddr_hex4> <len_dec>` then exactly `len` raw bytes from the host → `OK` or `ERR <reason>`. `len` is capped to `I2C_BUS_MAX_PAYLOAD` (256 bytes, one EEPROM page) — a multi-page write is several WRITE commands, one per page; the host is responsible for that chunking (this firmware deliberately doesn't do multi-page writes itself). `OK` is a genuine "safe to proceed" guarantee: the firmware polls the address (ACK-polling, capped at `WRITE_CYCLE_POLL_TIMEOUT_MS` = 20ms) until the EEPROM acknowledges again before responding, so the host never has to know or guess about the chip's internal write-cycle time. Confirmed on real hardware: an immediate READ right after a WRITE, with no host-side delay, correctly returns the just-written bytes — without the polling, the same test read back all zeros (the EEPROM was still mid-write-cycle and NACKed).
+- Anything else → `ERR unknown command`
+
+**Known simplification:** an out-of-range WRITE length is rejected without draining the (non-existent, per the client's own bug) payload bytes from the stream — this assumes a single well-behaved client (this repo's own PWA) that will simply never send a bad length. A different/misbehaving client could desync the command stream this way; there's no other client today, so this wasn't hardened further.
 
 ### CDC vs HID — decided: CDC
 
@@ -36,4 +47,4 @@ ninja
 
 This produces `build/pico_bridge.uf2`. Hold the Pico's BOOTSEL button while plugging it in (it mounts as a USB mass-storage drive), then copy `pico_bridge.uf2` onto it — it flashes and reboots automatically.
 
-To watch the bring-up output, open the Pico's USB serial port (any baud rate — it's a virtual CDC port, not real UART) in a terminal program (PuTTY, `screen`, the Arduino IDE's Serial Monitor, etc.).
+To try the command protocol by hand, open the Pico's USB serial port (any baud rate — it's a virtual CDC port, not real UART) in a terminal program (PuTTY, `screen`, the Arduino IDE's Serial Monitor, etc.) and type e.g. `PING` or `SCAN`, followed by Enter.

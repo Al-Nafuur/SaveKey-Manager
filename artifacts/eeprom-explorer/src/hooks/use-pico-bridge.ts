@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { connectPicoBridge, type DetectedDevice, type PicoBridgeConnection } from '@/lib/pico-bridge';
+import { PicoBridge, type DetectedDevice } from '@/lib/pico-bridge';
 
 export type PicoBridgeStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
@@ -11,35 +11,46 @@ export function usePicoBridge() {
   const [status, setStatus] = useState<PicoBridgeStatus>('idle');
   const [devices, setDevices] = useState<DetectedDevice[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const connectionRef = useRef<PicoBridgeConnection | null>(null);
+  const bridgeRef = useRef<PicoBridge | null>(null);
 
   const isSupported = typeof navigator !== 'undefined' && 'serial' in navigator;
 
-  const handleUnexpectedDisconnect = useCallback((error?: unknown) => {
-    connectionRef.current = null;
+  const fail = useCallback((error: unknown) => {
+    bridgeRef.current = null;
+    setStatus('error');
+    setErrorMessage(errorText(error));
     setDevices([]);
-    setStatus(error ? 'error' : 'idle');
-    setErrorMessage(error ? errorText(error) : null);
   }, []);
 
   const connect = useCallback(async () => {
-    if (connectionRef.current || status === 'connecting') return;
+    if (bridgeRef.current || status === 'connecting') return;
     setStatus('connecting');
     setErrorMessage(null);
     try {
-      const connection = await connectPicoBridge(setDevices, handleUnexpectedDisconnect);
-      connectionRef.current = connection;
+      const bridge = await PicoBridge.connect();
+      bridgeRef.current = bridge;
+      const scanned = await bridge.scan();
+      setDevices(scanned);
       setStatus('connected');
     } catch (error) {
-      setStatus('error');
-      setErrorMessage(errorText(error));
+      fail(error);
     }
-  }, [handleUnexpectedDisconnect, status]);
+  }, [fail, status]);
+
+  const rescan = useCallback(async () => {
+    const bridge = bridgeRef.current;
+    if (!bridge) return;
+    try {
+      setDevices(await bridge.scan());
+    } catch (error) {
+      fail(error);
+    }
+  }, [fail]);
 
   const disconnect = useCallback(async () => {
-    const connection = connectionRef.current;
-    connectionRef.current = null;
-    if (connection) await connection.disconnect();
+    const bridge = bridgeRef.current;
+    bridgeRef.current = null;
+    if (bridge) await bridge.disconnect().catch(() => {});
     setStatus('idle');
     setDevices([]);
     setErrorMessage(null);
@@ -47,9 +58,9 @@ export function usePicoBridge() {
 
   useEffect(() => {
     return () => {
-      void connectionRef.current?.disconnect();
+      void bridgeRef.current?.disconnect();
     };
   }, []);
 
-  return { status, devices, errorMessage, isSupported, connect, disconnect };
+  return { status, devices, errorMessage, isSupported, connect, disconnect, rescan, bridge: bridgeRef.current };
 }

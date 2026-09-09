@@ -29,6 +29,7 @@ pico_sdk_init()
 add_executable(pico_bridge
     src/main.c
     src/i2c_bus.c
+    src/command.c
 )
 
 target_include_directories(pico_bridge PRIVATE src)

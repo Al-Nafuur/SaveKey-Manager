@@ -1,8 +1,6 @@
-// Talks to the pico-bridge bring-up firmware (firmware/pico-bridge) over Web
-// Serial. There's no defined USB command protocol yet (see that project's
-// README — CDC-vs-HID is still an open decision), so this is a walking
-// skeleton: it reads the firmware's free-running human-readable bus-scan
-// output and parses it, rather than requesting a scan on demand.
+// Talks to the pico-bridge firmware (firmware/pico-bridge) over Web Serial
+// using its text-command protocol (see that project's README): PING, SCAN,
+// READ <addr> <memaddr> <len>, WRITE <addr> <memaddr> <len> + raw bytes.
 
 export type DetectedDevice = {
   // First I2C address (0x50-style, 7-bit) that ACKed in a contiguous run.
@@ -16,9 +14,6 @@ export type DetectedDevice = {
 // several consecutive I2C addresses, each covering a 64 KiB block — so N
 // contiguous ACKing addresses means one physical device of N * 64 KiB.
 const BYTES_PER_ADDRESS_BLOCK = 64 * 1024;
-
-const BANNER_RE = /---\s*SaveKey Plus bridge: bus scan/;
-const LINE_RE = /0x([0-9A-Fa-f]{2}):\s*(ACK|no response)/;
 
 export function groupContiguousAddresses(ackedAddresses: number[]): DetectedDevice[] {
   const sorted = [...ackedAddresses].sort((a, b) => a - b);
@@ -35,97 +30,156 @@ export function groupContiguousAddresses(ackedAddresses: number[]): DetectedDevi
   return devices;
 }
 
-// Incrementally parses the firmware's repeating output:
-//   --- SaveKey Plus bridge: bus scan ---
-//     0x50: ACK (device present)
-//     0x51: no response
-//     ...
-// A scan is considered complete (and reported) the moment the *next*
-// banner line arrives, since the firmware never prints an explicit
-// end-of-scan marker.
-export class BusScanParser {
-  private pending = '';
-  private ackedAddresses: number[] = [];
-  private sawBanner = false;
+function toHex(value: number, length: number): string {
+  return value.toString(16).padStart(length, '0');
+}
 
-  constructor(private readonly onScanComplete: (devices: DetectedDevice[]) => void) {}
+// Reads a byte stream either line-by-line or in exact-length chunks,
+// buffering whatever's left over between calls — needed because Web Serial
+// hands back arbitrarily-sized chunks that don't line up with the
+// protocol's own line/payload boundaries.
+class ByteStreamReader {
+  private buffer = new Uint8Array(0);
 
-  feed(chunk: string): void {
-    this.pending += chunk;
-    const lines = this.pending.split('\n');
-    this.pending = lines.pop() ?? '';
-    for (const rawLine of lines) {
-      this.consumeLine(rawLine.trim());
+  constructor(private readonly reader: ReadableStreamDefaultReader<Uint8Array>) {}
+
+  private async fill(): Promise<boolean> {
+    const { value, done } = await this.reader.read();
+    if (done) return false;
+    if (value && value.length > 0) {
+      const merged = new Uint8Array(this.buffer.length + value.length);
+      merged.set(this.buffer);
+      merged.set(value, this.buffer.length);
+      this.buffer = merged;
+    }
+    return true;
+  }
+
+  async readLine(): Promise<string> {
+    for (;;) {
+      const newlineIndex = this.buffer.indexOf(10); // '\n'
+      if (newlineIndex !== -1) {
+        const lineBytes = this.buffer.slice(0, newlineIndex);
+        this.buffer = this.buffer.slice(newlineIndex + 1);
+        const text = new TextDecoder().decode(lineBytes);
+        return text.endsWith('\r') ? text.slice(0, -1) : text;
+      }
+      if (!(await this.fill())) throw new Error('Pico bridge: port closed while waiting for a response.');
     }
   }
 
-  private consumeLine(line: string): void {
-    if (!line) return;
-    if (BANNER_RE.test(line)) {
-      if (this.sawBanner) {
-        this.onScanComplete(groupContiguousAddresses(this.ackedAddresses));
-      }
-      this.ackedAddresses = [];
-      this.sawBanner = true;
-      return;
+  async readExact(count: number): Promise<Uint8Array> {
+    while (this.buffer.length < count) {
+      if (!(await this.fill())) throw new Error('Pico bridge: port closed while waiting for data.');
     }
-    const match = LINE_RE.exec(line);
-    if (match && match[2] === 'ACK') {
-      this.ackedAddresses.push(parseInt(match[1], 16));
-    }
+    const result = this.buffer.slice(0, count);
+    this.buffer = this.buffer.slice(count);
+    return result;
   }
 }
 
-export type PicoBridgeConnection = {
-  disconnect: () => Promise<void>;
-};
+export class PicoBridge {
+  private readonly streamReader: ByteStreamReader;
+  private readonly textEncoder = new TextEncoder();
+  // Serializes commands so concurrent calls (e.g. two buttons clicked at
+  // once) can't interleave their command/response lines on the wire.
+  private queue: Promise<unknown> = Promise.resolve();
 
-// Baud rate is meaningless for a USB-CDC virtual serial port, but the Web
-// Serial API requires one to be supplied to open().
-const CDC_BAUD_RATE = 115200;
-
-export async function connectPicoBridge(
-  onScanComplete: (devices: DetectedDevice[]) => void,
-  onDisconnect: (error?: unknown) => void,
-): Promise<PicoBridgeConnection> {
-  if (!navigator.serial) {
-    throw new Error('Web Serial is not supported in this browser (use Chrome or Edge).');
+  private constructor(
+    private readonly port: SerialPort,
+    private readonly reader: ReadableStreamDefaultReader<Uint8Array>,
+    private readonly writer: WritableStreamDefaultWriter<Uint8Array>,
+  ) {
+    this.streamReader = new ByteStreamReader(reader);
   }
 
-  const port = await navigator.serial.requestPort();
-  await port.open({ baudRate: CDC_BAUD_RATE });
-
-  const reader = port.readable?.getReader();
-  if (!reader) {
-    await port.close();
-    throw new Error('Serial port has no readable stream.');
-  }
-
-  const parser = new BusScanParser(onScanComplete);
-  const decoder = new TextDecoder();
-  let cancelled = false;
-
-  void (async () => {
-    try {
-      while (!cancelled) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value) parser.feed(decoder.decode(value, { stream: true }));
-      }
-    } catch (error) {
-      if (!cancelled) onDisconnect(error);
-      return;
-    } finally {
-      reader.releaseLock();
+  static async connect(): Promise<PicoBridge> {
+    if (!navigator.serial) {
+      throw new Error('Web Serial is not supported in this browser (use Chrome or Edge).');
     }
-    if (!cancelled) onDisconnect();
-  })();
+    const port = await navigator.serial.requestPort();
+    // Baud rate is meaningless for a USB-CDC virtual serial port, but Web
+    // Serial requires one to be supplied to open().
+    await port.open({ baudRate: 115200 });
 
-  return {
-    disconnect: async () => {
-      cancelled = true;
-      await reader.cancel().catch(() => {});
-      await port.close().catch(() => {});
-    },
-  };
+    const reader = port.readable?.getReader();
+    const writer = port.writable?.getWriter();
+    if (!reader || !writer) {
+      await port.close();
+      throw new Error('Serial port has no readable/writable stream.');
+    }
+    return new PicoBridge(port, reader, writer);
+  }
+
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(task, task);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async sendLine(line: string): Promise<void> {
+    await this.writer.write(this.textEncoder.encode(`${line}\n`));
+  }
+
+  private async expectOk(): Promise<string> {
+    const line = await this.streamReader.readLine();
+    if (line.startsWith('ERR')) throw new Error(`Pico bridge: ${line}`);
+    if (!line.startsWith('OK')) throw new Error(`Pico bridge: unexpected response "${line}"`);
+    return line;
+  }
+
+  ping(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.sendLine('PING');
+      await this.expectOk();
+    });
+  }
+
+  scan(): Promise<DetectedDevice[]> {
+    return this.enqueue(async () => {
+      await this.sendLine('SCAN');
+      const acked: number[] = [];
+      for (;;) {
+        const line = await this.streamReader.readLine();
+        if (line.startsWith('ACK ')) {
+          acked.push(parseInt(line.slice(4), 16));
+          continue;
+        }
+        if (line.startsWith('OK')) break;
+        if (line.startsWith('ERR')) throw new Error(`Pico bridge: ${line}`);
+        throw new Error(`Pico bridge: unexpected response "${line}"`);
+      }
+      return groupContiguousAddresses(acked);
+    });
+  }
+
+  read(addr: number, memAddr: number, len: number): Promise<Uint8Array> {
+    return this.enqueue(async () => {
+      await this.sendLine(`READ ${toHex(addr, 2)} ${toHex(memAddr, 4)} ${len}`);
+      const header = await this.expectOk();
+      const declaredLen = Number(header.split(' ')[1]);
+      if (!Number.isFinite(declaredLen)) throw new Error(`Pico bridge: bad READ response "${header}"`);
+      return this.streamReader.readExact(declaredLen);
+    });
+  }
+
+  write(addr: number, memAddr: number, data: Uint8Array): Promise<void> {
+    return this.enqueue(async () => {
+      await this.sendLine(`WRITE ${toHex(addr, 2)} ${toHex(memAddr, 4)} ${data.length}`);
+      await this.writer.write(data);
+      await this.expectOk();
+    });
+  }
+
+  disconnect(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.reader.cancel().catch(() => {});
+      this.reader.releaseLock();
+      this.writer.releaseLock();
+      await this.port.close().catch(() => {});
+    });
+  }
 }

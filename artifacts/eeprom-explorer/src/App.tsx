@@ -346,7 +346,7 @@ function Home() {
           <div className="brand-mark" aria-hidden="true"><CircuitBoard size={22} strokeWidth={1.8} /></div>
           <div>
             <p className="brand-name">SaveKey-Manager</p>
-             <p className="brand-sub">atari style utility · rev 2.4</p>
+             <p className="brand-sub">i2c utility · rev 0.2</p>
           </div>
         </div>
          <p className="side-label">Manual index</p>
@@ -528,6 +528,10 @@ function Home() {
                         </div>
                       ))
                     )}
+                    <div className="tool-divider" />
+                    <button className="action-button" onClick={() => void picoBridge.rescan()} data-testid="button-rescan-pico">
+                      <RefreshCw size={14} /><span>Rescan</span>
+                    </button>
                     <button className="action-button" onClick={() => void picoBridge.disconnect()} data-testid="button-disconnect-pico">
                       <span>Disconnect</span>
                     </button>
