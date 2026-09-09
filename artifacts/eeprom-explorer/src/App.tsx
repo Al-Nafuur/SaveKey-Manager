@@ -465,6 +465,15 @@ function Home() {
     const bytes = new Uint8Array(await pickedFile.arrayBuffer());
     const live = liveDrives[activeDriveId];
 
+    // A real device is connected, but this specific drive has no valid
+    // TinyELF header — refuse rather than silently falling through to the
+    // local-only demo behavior below, which would look like a real upload
+    // succeeded (and real delete) without ever touching the hardware.
+    if (picoBridge.status === 'connected' && !live) {
+      pushActivity('Save failed', 'This device is not TinyELF-formatted — use Format first.');
+      return;
+    }
+
     if (live && picoBridge.bridge) {
       const bridge = picoBridge.bridge;
       try {
@@ -514,6 +523,14 @@ function Home() {
 
   const removeFile = () => {
     if (!selectedFile) return;
+    // Real DELETE (flip the directory entry's flag, free its VTOC bits)
+    // isn't implemented yet — refuse rather than silently removing it from
+    // the local view only, which would look like a real delete happened.
+    if (liveDrives[selectedFile.driveId]) {
+      pushActivity('Delete failed', 'Deleting files on real hardware is not implemented yet.');
+      setDialog(null);
+      return;
+    }
     pushActivity('File deleted', selectedFile.name);
     setFiles((items) => items.filter((file) => file.id !== selectedFile.id));
     setSelectedFileId(null);
@@ -698,7 +715,16 @@ function Home() {
                   {visibleFiles.map((file) => { const Icon = fileIcon(file.extension); return <button className={`file-card ${selectedFileId === file.id ? 'selected' : ''}`} key={file.id} onClick={() => setSelectedFileId(file.id)} data-testid={`card-file-${file.id}`}><div className="file-card-top"><Icon size={20} className="file-icon" /><span className="tag">{file.extension}</span></div><div className="file-card-title"><strong>{file.name}</strong></div><div className="file-card-meta"><span>{formatSize(file.size)}</span><span>{file.attributes}</span></div></button>; })}
                 </div>
               )}
-              {!visibleFiles.length && <div className="empty-state"><div className="empty-icon">{query ? <Search size={21} /> : <Archive size={21} />}</div><h3>{query ? 'No matching files' : 'This drive is empty'}</h3><p>{query ? 'Try a different name or clear the filter.' : 'Import a file here to begin.'}</p></div>}
+              {!visibleFiles.length && (() => {
+                const notFormatted = picoBridge.status === 'connected' && !liveDrives[activeDriveId];
+                return (
+                  <div className="empty-state">
+                    <div className="empty-icon">{query ? <Search size={21} /> : <Archive size={21} />}</div>
+                    <h3>{query ? 'No matching files' : notFormatted ? 'Not TinyELF-formatted' : 'This drive is empty'}</h3>
+                    <p>{query ? 'Try a different name or clear the filter.' : notFormatted ? 'Use the Format button in Live hardware to initialize this device first.' : 'Import a file here to begin.'}</p>
+                  </div>
+                );
+              })()}
             </section>
           )}
 
