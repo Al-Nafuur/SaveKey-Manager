@@ -30,7 +30,9 @@ Text command lines (newline-terminated) over the USB CDC port; binary payload by
 
 ### CDC vs HID — decided: CDC
 
-Went with CDC/Web Serial, not HID, once the walking-skeleton test (see `artifacts/eeprom-explorer/src/lib/pico-bridge.ts`) proved it out on real hardware: connected fine, and correctly told apart the SaveKey Plus's two devices (0x50 + 0x54-0x57) from a normal single-EEPROM SaveKey after hotplugging. Deciding factor: CDC keeps debugging easy (any terminal program can watch the bring-up output directly), and the earlier concern about Web Serial being Chromium-only turned out to be a wash anyway — WebHID has the exact same restriction, so it bought nothing there. HID's zero-driver-install advantage stayed theoretical; CDC's debuggability is real and already paying off.
+Went with CDC/Web Serial, not HID, once the walking-skeleton test (see `artifacts/eeprom-explorer/src/lib/pico-bridge.ts`) proved it out on real hardware: connected fine, and correctly told apart the SaveKey Plus's two devices (0x50 + 0x54-0x57) from a normal single-EEPROM SaveKey after hotplugging. Deciding factor: CDC keeps debugging easy (any terminal program can watch the bring-up output directly), and the earlier concern about Web Serial being Chromium-only turned out to be a wash anyway — WebHID had the exact same restriction, so it bought nothing there. HID's zero-driver-install advantage stayed theoretical; CDC's debuggability is real and already paying off.
+
+**Update (2026-09):** Firefox 151 (May 2026) added Web Serial support on desktop, ending the Chromium-only restriction — Web Serial is no longer a browser-support argument against CDC at all. (Safari still doesn't support it; Firefox's mobile/Android status wasn't announced.) The app already uses plain feature detection (`'serial' in navigator`), not a Chromium allowlist, so this needed no code change — Firefox users just start working once they're on 151+.
 
 ## Building
 

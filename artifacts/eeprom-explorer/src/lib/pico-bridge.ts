@@ -95,7 +95,7 @@ export class PicoBridge {
 
   static async connect(): Promise<PicoBridge> {
     if (!navigator.serial) {
-      throw new Error('Web Serial is not supported in this browser (use Chrome or Edge).');
+      throw new Error('Web Serial is not supported in this browser (use Chrome, Edge, or Firefox 151+).');
     }
     const port = await navigator.serial.requestPort();
     // Baud rate is meaningless for a USB-CDC virtual serial port, but Web

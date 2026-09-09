@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import {
@@ -30,7 +30,8 @@ import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
 import { usePicoBridge } from '@/hooks/use-pico-bridge';
 import type { DetectedDevice } from '@/lib/pico-bridge';
-import { computeTinyElfLayout, formatDevice } from '@/lib/tinyelf-format';
+import { computeTinyElfLayout, formatDevice, readTinyElfHeader } from '@/lib/tinyelf-format';
+import { readDirectory } from '@/lib/tinyelf-directory';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -308,6 +309,66 @@ function Home() {
     }
   };
 
+  // Replaces the demo drives/files with what's actually on the connected
+  // hardware — reads each detected device's real header (if TinyELF-
+  // formatted) and real directory, instead of showing made-up sample data
+  // once real hardware is present. Reverts to the demo data on disconnect.
+  useEffect(() => {
+    const bridge = picoBridge.bridge;
+    if (picoBridge.status !== 'connected' || !bridge) {
+      if (picoBridge.status === 'idle') {
+        setDrives(initialDrives);
+        setFiles(initialTinyElfFiles);
+        setActiveDriveId('E2');
+      }
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      const realDrives: Drive[] = [];
+      const realFiles: TinyElfFile[] = [];
+      for (const device of picoBridge.devices) {
+        const id = hex(device.startAddress);
+        const layout = await readTinyElfHeader(bridge, device).catch(() => null);
+        realDrives.push({
+          id,
+          label: id,
+          address: device.startAddress,
+          totalBytes: layout ? layout.sectorSize * layout.totalSectors : device.capacityBytes,
+          mode: 'tinyelf-fs',
+          canChangeMode: false,
+        });
+        if (layout) {
+          const entries = await readDirectory(bridge, device, layout).catch(() => []);
+          for (const entry of entries) {
+            realFiles.push({
+              id: `${id}-${entry.startSector}`,
+              name: entry.name,
+              extension: entry.extension,
+              // Approximate: real size needs the last sector's actual byte
+              // count (per-sector control info), not read yet.
+              size: entry.sectorCount * layout.sectorSize,
+              modified: '',
+              attributes: entry.locked ? 'R/O' : 'R/W',
+              driveId: id,
+              bytes: [],
+            });
+          }
+        }
+      }
+      if (!cancelled && realDrives.length > 0) {
+        setDrives(realDrives);
+        setFiles(realFiles);
+        setActiveDriveId(realDrives[0].id);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [picoBridge.status, picoBridge.devices, picoBridge.bridge]);
+
   const selectDrive = (driveId: string) => {
     if (driveId === activeDriveId) return;
     setActiveDriveId(driveId);
@@ -554,7 +615,7 @@ function Home() {
               </div>
               <div className="hardware-list">
                 {!picoBridge.isSupported ? (
-                  <p className="protect-line">Web Serial is not supported in this browser — use Chrome or Edge.</p>
+                  <p className="protect-line">Web Serial is not supported in this browser — use Chrome, Edge, or Firefox 151+.</p>
                 ) : picoBridge.status === 'connecting' ? (
                   <p className="protect-line">Connecting…</p>
                 ) : picoBridge.status === 'connected' ? (

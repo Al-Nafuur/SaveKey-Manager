@@ -101,6 +101,41 @@ function writeU16(buf: Uint8Array, offset: number, value: number): void {
   buf[offset + 1] = value & 0xff;
 }
 
+function readU16(buf: Uint8Array, offset: number): number {
+  return (buf[offset] << 8) | buf[offset + 1];
+}
+
+// Reads back a header sector and validates the "TELF" magic — returns null
+// if the device isn't TinyELF-formatted (or the sector is unreadable/blank).
+export function parseHeaderSector(buf: Uint8Array): TinyElfLayout | null {
+  const hasMagic = FS_MAGIC.every((byte, i) => buf[TINYELF_FIELDS_OFFSET + i] === byte);
+  if (!hasMagic) return null;
+
+  const sectorSize = readU16(buf, DOS_SECTOR_SIZE_OFFSET);
+  const totalSectors = readU16(buf, DOS_TOTAL_SECTORS_OFFSET);
+  let offset = TINYELF_FIELDS_OFFSET + FS_MAGIC.length + 2; // skip magic, version, flags
+  const vtocStart = readU16(buf, offset);
+  offset += 2;
+  const vtocSectors = readU16(buf, offset);
+  offset += 2;
+  const directoryStart = readU16(buf, offset);
+  offset += 2;
+  const directorySectors = readU16(buf, offset);
+
+  const entriesPerSector = Math.floor(sectorSize / 16);
+  return {
+    sectorSize,
+    totalSectors,
+    headerSectors: 1,
+    vtocStart,
+    vtocSectors,
+    directoryStart,
+    directorySectors,
+    dataStart: directoryStart + directorySectors,
+    maxFiles: directorySectors * entriesPerSector,
+  };
+}
+
 export function buildHeaderSector(layout: TinyElfLayout): Uint8Array {
   const buf = new Uint8Array(layout.sectorSize);
   // $00-$17: classic DOS 2.x boot-sector fields (BFLAG/BRCNT/BLDADR/DOSINI
@@ -153,9 +188,38 @@ export function buildDirectorySectors(layout: TinyElfLayout): Uint8Array {
 // hardware notes: one 64 KiB block per address) — translate a flat logical
 // byte offset within the device into the (i2c address, 16-bit mem address)
 // pair PicoBridge actually talks in.
-function resolveDeviceAddress(device: DetectedDevice, byteOffset: number): { addr: number; memAddr: number } {
+export function resolveDeviceAddress(device: DetectedDevice, byteOffset: number): { addr: number; memAddr: number } {
   const blockIndex = Math.floor(byteOffset / 0x10000);
   return { addr: device.startAddress + blockIndex, memAddr: byteOffset % 0x10000 };
+}
+
+// Reads `length` bytes starting at a flat logical byte offset within the
+// device, transparently splitting the read at 64 KiB address-block
+// boundaries if it crosses one (a single READ command can't span two I2C
+// addresses).
+export async function readDeviceBytes(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  byteOffset: number,
+  length: number,
+): Promise<Uint8Array> {
+  const result = new Uint8Array(length);
+  let offset = byteOffset;
+  let written = 0;
+  while (written < length) {
+    const { addr, memAddr } = resolveDeviceAddress(device, offset);
+    const chunk = Math.min(length - written, 0x10000 - memAddr);
+    const bytes = await bridge.read(addr, memAddr, chunk);
+    result.set(bytes, written);
+    offset += chunk;
+    written += chunk;
+  }
+  return result;
+}
+
+export async function readTinyElfHeader(bridge: PicoBridge, device: DetectedDevice): Promise<TinyElfLayout | null> {
+  const bytes = await readDeviceBytes(bridge, device, 0, TINYELF_FIELDS_OFFSET + FS_MAGIC.length + 2 + 8);
+  return parseHeaderSector(bytes);
 }
 
 async function writeSectors(
