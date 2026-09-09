@@ -66,13 +66,21 @@ export function parseDirectorySectors(buf: Uint8Array): DirectoryEntry[] {
   return entries;
 }
 
+export async function readDirectoryRaw(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  layout: TinyElfLayout,
+): Promise<Uint8Array> {
+  const byteOffset = layout.directoryStart * layout.sectorSize;
+  const length = layout.directorySectors * layout.sectorSize;
+  return readDeviceBytes(bridge, device, byteOffset, length);
+}
+
 export async function readDirectory(
   bridge: PicoBridge,
   device: DetectedDevice,
   layout: TinyElfLayout,
 ): Promise<DirectoryEntry[]> {
-  const byteOffset = layout.directoryStart * layout.sectorSize;
-  const length = layout.directorySectors * layout.sectorSize;
-  const bytes = await readDeviceBytes(bridge, device, byteOffset, length);
+  const bytes = await readDirectoryRaw(bridge, device, layout);
   return parseDirectorySectors(bytes);
 }

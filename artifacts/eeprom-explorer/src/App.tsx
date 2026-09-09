@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import {
@@ -29,9 +29,10 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
 import { usePicoBridge } from '@/hooks/use-pico-bridge';
-import type { DetectedDevice } from '@/lib/pico-bridge';
-import { computeTinyElfLayout, formatDevice, readTinyElfHeader } from '@/lib/tinyelf-format';
+import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
+import { computeTinyElfLayout, formatDevice, readTinyElfHeader, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
+import { saveFile } from '@/lib/tinyelf-save';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -257,6 +258,7 @@ function Home() {
   const [formatCapacityKiB, setFormatCapacityKiB] = useState(32);
   const [formatStatus, setFormatStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [formatMessage, setFormatMessage] = useState('');
+  const [liveDrives, setLiveDrives] = useState<Record<string, { device: DetectedDevice; layout: TinyElfLayout }>>({});
 
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
@@ -313,6 +315,46 @@ function Home() {
   // hardware — reads each detected device's real header (if TinyELF-
   // formatted) and real directory, instead of showing made-up sample data
   // once real hardware is present. Reverts to the demo data on disconnect.
+  // Exposed as a function (not just inline in the effect) so a real SAVE
+  // can trigger a re-read of just-changed drives afterwards.
+  const loadLiveData = useCallback(async (bridge: PicoBridge, devices: DetectedDevice[]) => {
+    const realDrives: Drive[] = [];
+    const realFiles: TinyElfFile[] = [];
+    const layouts: Record<string, { device: DetectedDevice; layout: TinyElfLayout }> = {};
+    for (const device of devices) {
+      // Atari-style drive numbering: E1 = 0x50 .. E8 = 0x57.
+      const id = `E${device.startAddress - 0x50 + 1}`;
+      const layout = await readTinyElfHeader(bridge, device).catch(() => null);
+      realDrives.push({
+        id,
+        label: id,
+        address: device.startAddress,
+        totalBytes: layout ? layout.sectorSize * layout.totalSectors : device.capacityBytes,
+        mode: 'tinyelf-fs',
+        canChangeMode: false,
+      });
+      if (layout) {
+        layouts[id] = { device, layout };
+        const entries = await readDirectory(bridge, device, layout).catch(() => []);
+        for (const entry of entries) {
+          realFiles.push({
+            id: `${id}-${entry.startSector}`,
+            name: entry.name,
+            extension: entry.extension,
+            // Approximate: real size needs the last sector's actual byte
+            // count (per-sector control info), not read yet.
+            size: entry.sectorCount * layout.sectorSize,
+            modified: '',
+            attributes: entry.locked ? 'R/O' : 'R/W',
+            driveId: id,
+            bytes: [],
+          });
+        }
+      }
+    }
+    return { realDrives, realFiles, layouts };
+  }, []);
+
   useEffect(() => {
     const bridge = picoBridge.bridge;
     if (picoBridge.status !== 'connected' || !bridge) {
@@ -320,54 +362,26 @@ function Home() {
         setDrives(initialDrives);
         setFiles(initialTinyElfFiles);
         setActiveDriveId('E2');
+        setLiveDrives({});
       }
       return;
     }
 
     let cancelled = false;
     (async () => {
-      const realDrives: Drive[] = [];
-      const realFiles: TinyElfFile[] = [];
-      for (const device of picoBridge.devices) {
-        const id = hex(device.startAddress);
-        const layout = await readTinyElfHeader(bridge, device).catch(() => null);
-        realDrives.push({
-          id,
-          label: id,
-          address: device.startAddress,
-          totalBytes: layout ? layout.sectorSize * layout.totalSectors : device.capacityBytes,
-          mode: 'tinyelf-fs',
-          canChangeMode: false,
-        });
-        if (layout) {
-          const entries = await readDirectory(bridge, device, layout).catch(() => []);
-          for (const entry of entries) {
-            realFiles.push({
-              id: `${id}-${entry.startSector}`,
-              name: entry.name,
-              extension: entry.extension,
-              // Approximate: real size needs the last sector's actual byte
-              // count (per-sector control info), not read yet.
-              size: entry.sectorCount * layout.sectorSize,
-              modified: '',
-              attributes: entry.locked ? 'R/O' : 'R/W',
-              driveId: id,
-              bytes: [],
-            });
-          }
-        }
-      }
+      const { realDrives, realFiles, layouts } = await loadLiveData(bridge, picoBridge.devices);
       if (!cancelled && realDrives.length > 0) {
         setDrives(realDrives);
         setFiles(realFiles);
         setActiveDriveId(realDrives[0].id);
+        setLiveDrives(layouts);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [picoBridge.status, picoBridge.devices, picoBridge.bridge]);
+  }, [picoBridge.status, picoBridge.devices, picoBridge.bridge, loadLiveData]);
 
   const selectDrive = (driveId: string) => {
     if (driveId === activeDriveId) return;
@@ -388,7 +402,28 @@ function Home() {
   };
 
   const importFile = async (pickedFile: File) => {
-    const bytes = Array.from(new Uint8Array(await pickedFile.arrayBuffer()));
+    const bytes = new Uint8Array(await pickedFile.arrayBuffer());
+    const live = liveDrives[activeDriveId];
+
+    if (live && picoBridge.bridge) {
+      const bridge = picoBridge.bridge;
+      try {
+        pushActivity('Uploading file', `${pickedFile.name} · ${formatSize(bytes.length)}`);
+        const saved = await saveFile(bridge, live.device, live.layout, pickedFile.name, bytes);
+        const { realDrives, realFiles, layouts } = await loadLiveData(bridge, picoBridge.devices);
+        setDrives(realDrives);
+        setFiles(realFiles);
+        setLiveDrives(layouts);
+        setSelectedFileId(`${activeDriveId}-${saved.startSector}`);
+        pushActivity('File saved', `${saved.name}.${saved.extension} · sector ${saved.startSector} · ${saved.sectorCount} sector${saved.sectorCount === 1 ? '' : 's'}`);
+      } catch (error) {
+        pushActivity('Save failed', error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    // No real hardware connected for this drive — fall back to the local
+    // demo-only behavior (works on the sample E1/E2 drives).
     const rawName = pickedFile.name.toUpperCase();
     const extension = rawName.includes('.') ? rawName.split('.').pop() ?? 'BIN' : 'BIN';
     const file: TinyElfFile = {
@@ -399,7 +434,7 @@ function Home() {
       modified: '08 May 1997 14:38',
       attributes: 'R/W',
       driveId: activeDriveId,
-      bytes,
+      bytes: Array.from(bytes),
     };
     setFiles((items) => [...items, file]);
     setSelectedFileId(file.id);

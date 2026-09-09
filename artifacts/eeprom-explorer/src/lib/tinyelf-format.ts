@@ -69,12 +69,22 @@ const DOS_SECTOR_SIZE_OFFSET = 0x14;
 const DOS_TOTAL_SECTORS_OFFSET = 0x16;
 const TINYELF_FIELDS_OFFSET = 0x18;
 
+// The sector-chain control info's file-number field is 6 bits (see
+// encodeSectorControl/decodeSectorControl) — max 64 distinct files
+// regardless of how many directory entries would otherwise fit.
+const MAX_FILE_NUMBERS = 64;
+
 export function computeTinyElfLayout(totalBytes: number): TinyElfLayout {
   const sectorSize = totalBytes <= 32 * 1024 ? 64 : totalBytes <= 128 * 1024 ? 128 : 256;
   const totalSectors = Math.floor(totalBytes / sectorSize);
-  const directorySectors =
-    totalBytes <= 8 * 1024 ? 1 : totalBytes <= 16 * 1024 ? 2 : totalBytes <= 32 * 1024 ? 4 : 8;
   const entriesPerSector = Math.floor(sectorSize / 16);
+  const directorySectorsByCapacity =
+    totalBytes <= 8 * 1024 ? 1 : totalBytes <= 16 * 1024 ? 2 : totalBytes <= 32 * 1024 ? 4 : 8;
+  // Cap so directorySectors * entriesPerSector never exceeds MAX_FILE_NUMBERS
+  // — otherwise sectors would compute directory slots that no file's sector
+  // chain could ever validly reference (e.g. 256B sectors x 8 dir sectors
+  // would allow 128 files, double what the 6-bit field can address).
+  const directorySectors = Math.min(directorySectorsByCapacity, Math.floor(MAX_FILE_NUMBERS / entriesPerSector));
   const headerSectors = 1;
   // One VTOC bit per sector -> ceil(totalSectors / 8) bitmap bytes, rounded
   // up to whole sectors.
@@ -184,6 +194,27 @@ export function buildDirectorySectors(layout: TinyElfLayout): Uint8Array {
   return new Uint8Array(layout.directorySectors * layout.sectorSize);
 }
 
+// Sector-chain control info: the last SECTOR_CONTROL_BYTES bytes of every
+// data sector (user-supplied bit layout, generalized to sectorSize-3 rather
+// than the classic fixed 128-byte-sector offsets 125/126/127):
+//   byte 0 (offset sectorSize-3): number of valid data bytes in this sector
+//   byte 1 (offset sectorSize-2): bits 0-5 = file number (0-63),
+//                                 bits 6-7 = next-sector number, high 2 bits
+//   byte 2 (offset sectorSize-1): next-sector number, low 8 bits
+// 10-bit next-sector field -> sectors 0-1023; 0 is never a valid data-chain
+// target (it's the boot sector), so it doubles as the "end of chain" marker.
+export const SECTOR_LINK_NONE = 0;
+
+export function encodeSectorControl(bytesUsed: number, fileNumber: number, nextSector: number): [number, number, number] {
+  const nextHi = (nextSector >> 8) & 0x03;
+  const nextLo = nextSector & 0xff;
+  return [bytesUsed, (fileNumber & 0x3f) | (nextHi << 6), nextLo];
+}
+
+export function decodeSectorControl(byte0: number, byte1: number, byte2: number): { bytesUsed: number; fileNumber: number; nextSector: number } {
+  return { bytesUsed: byte0, fileNumber: byte1 & 0x3f, nextSector: ((byte1 >> 6) & 0x03) << 8 | byte2 };
+}
+
 // A device can span several consecutive I2C addresses (per the SaveKey
 // hardware notes: one 64 KiB block per address) — translate a flat logical
 // byte offset within the device into the (i2c address, 16-bit mem address)
@@ -222,7 +253,7 @@ export async function readTinyElfHeader(bridge: PicoBridge, device: DetectedDevi
   return parseHeaderSector(bytes);
 }
 
-async function writeSectors(
+export async function writeSectors(
   bridge: PicoBridge,
   device: DetectedDevice,
   startSector: number,
