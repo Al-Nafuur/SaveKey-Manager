@@ -29,6 +29,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
 import { usePicoBridge } from '@/hooks/use-pico-bridge';
+import type { DetectedDevice } from '@/lib/pico-bridge';
+import { computeTinyElfLayout, formatDevice } from '@/lib/tinyelf-format';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -75,6 +77,17 @@ const SCRATCHPAD_START = 0x0c0;
 const SCRATCHPAD_END = 0x0ff;
 const TOTAL_PAGES = 512;
 const ALLOCATION_LIST_URL = 'https://github.com/atariage-community/savekey-allocation-list';
+
+// Standard EEPROM capacities from the TinyELF FS design notes. SCAN can only
+// tell us "N I2C addresses ACKed", which for a single address (<=64 KiB) is
+// ambiguous between e.g. a 4 KiB and a 32 KiB chip that both only occupy one
+// address — the user has to pick the real size, we can only guess a default.
+const EEPROM_CAPACITY_OPTIONS_KIB = [4, 8, 16, 32, 64, 128, 256];
+
+function guessCapacityKiB(device: DetectedDevice): number {
+  if (device.addressCount > 1) return device.addressCount * 64;
+  return 32; // matches this project's "standard SaveKey" EEPROM 1 capacity
+}
 
 const initialDrives: Drive[] = [
   { id: 'E1', label: 'E1', address: 0x50, totalBytes: 32 * 1024, mode: 'savekey', canChangeMode: true },
@@ -239,6 +252,10 @@ function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const picoBridge = usePicoBridge();
+  const [formatTarget, setFormatTarget] = useState<DetectedDevice | null>(null);
+  const [formatCapacityKiB, setFormatCapacityKiB] = useState(32);
+  const [formatStatus, setFormatStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [formatMessage, setFormatMessage] = useState('');
 
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
@@ -258,9 +275,37 @@ function Home() {
     [query],
   );
   const usedBytes = driveUsedBytes(activeDrive, files);
+  const formatLayout = useMemo(() => computeTinyElfLayout(formatCapacityKiB * 1024), [formatCapacityKiB]);
 
   const pushActivity = (message: string, detail?: string) => {
     setActivity((items) => [{ id: Date.now(), time: nowTime(), message, detail }, ...items].slice(0, 7));
+  };
+
+  const openFormatDialog = (device: DetectedDevice) => {
+    setFormatTarget(device);
+    setFormatCapacityKiB(guessCapacityKiB(device));
+    setFormatStatus('idle');
+    setFormatMessage('');
+  };
+
+  const closeFormatDialog = () => {
+    if (formatStatus === 'running') return;
+    setFormatTarget(null);
+  };
+
+  const runFormat = async () => {
+    const bridge = picoBridge.bridge;
+    if (!formatTarget || !bridge) return;
+    setFormatStatus('running');
+    try {
+      await formatDevice(bridge, formatTarget, formatCapacityKiB * 1024, setFormatMessage);
+      setFormatStatus('done');
+      pushActivity('Device formatted', `${hex(formatTarget.startAddress)} · ${formatCapacityKiB} KiB`);
+      await picoBridge.rescan();
+    } catch (error) {
+      setFormatStatus('error');
+      setFormatMessage(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const selectDrive = (driveId: string) => {
@@ -525,6 +570,13 @@ function Home() {
                               : `${hex(device.startAddress)}–${hex(device.startAddress + device.addressCount - 1)}`}
                           </span>
                           <strong>{formatSize(device.capacityBytes)}</strong>
+                          <button
+                            className="action-button"
+                            onClick={() => openFormatDialog(device)}
+                            data-testid={`button-format-${hex(device.startAddress)}`}
+                          >
+                            <span>Format</span>
+                          </button>
                         </div>
                       ))
                     )}
@@ -618,6 +670,57 @@ function Home() {
           </aside>
         </div>
       </main>
+
+      {formatTarget && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeFormatDialog(); }}
+        >
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="format-dialog-title">
+            <div className="modal-head">
+              <div>
+                <h2 id="format-dialog-title">Format device {hex(formatTarget.startAddress)}</h2>
+                <p>Writes only the boot sector, VTOC, and directory — existing data sectors are left untouched.</p>
+              </div>
+              <button className="modal-close" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-close-format-dialog">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <label className="detail-row" htmlFor="format-capacity-select">
+                <span>EEPROM capacity</span>
+                <select
+                  id="format-capacity-select"
+                  value={formatCapacityKiB}
+                  disabled={formatStatus === 'running'}
+                  onChange={(event) => setFormatCapacityKiB(Number(event.target.value))}
+                  data-testid="select-format-capacity"
+                >
+                  {EEPROM_CAPACITY_OPTIONS_KIB.map((kib) => (
+                    <option key={kib} value={kib}>{kib} KiB</option>
+                  ))}
+                </select>
+              </label>
+              <div className="capacity-block" title="Computed from the chosen capacity — see firmware/pico-bridge README / tinyelf-format.ts for the exact layout rules">
+                <div className="capacity-line"><span>Sector size</span><strong>{formatLayout.sectorSize} B</strong></div>
+                <div className="capacity-line"><span>Total sectors</span><strong>{formatLayout.totalSectors}</strong></div>
+                <div className="capacity-line"><span>VTOC</span><strong>sector {formatLayout.vtocStart}, {formatLayout.vtocSectors} sector{formatLayout.vtocSectors === 1 ? '' : 's'}</strong></div>
+                <div className="capacity-line"><span>Directory</span><strong>sector {formatLayout.directoryStart}, {formatLayout.directorySectors} sector{formatLayout.directorySectors === 1 ? '' : 's'} · {formatLayout.maxFiles} files max</strong></div>
+                <div className="capacity-line"><span>Data region</span><strong>from sector {formatLayout.dataStart}</strong></div>
+              </div>
+              {formatStatus === 'error' && <div className="warning-copy">{formatMessage}</div>}
+              {(formatStatus === 'running' || formatStatus === 'done') && <p className="protect-line">{formatMessage}</p>}
+              <div className="modal-actions">
+                <button className="action-button" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-cancel-format">Cancel</button>
+                <button className="action-button danger" onClick={() => void runFormat()} disabled={formatStatus === 'running' || formatStatus === 'done'} data-testid="button-confirm-format">
+                  <span>{formatStatus === 'running' ? 'Formatting…' : 'Format'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {dialog === 'delete' && selectedFile && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title"><div className="modal-head"><div><h2 id="delete-dialog-title">Delete file?</h2><p>This action removes the entry from the local drive image.</p></div><button className="modal-close" onClick={() => setDialog(null)} data-testid="button-close-delete-dialog"><X size={17} /></button></div><div className="modal-body"><div className="warning-copy"><LockKeyhole size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />{selectedFile.name} is marked {selectedFile.attributes}. The physical write-protect switch is enabled, so this sample operation only changes the local view.</div><div className="modal-actions"><button className="action-button" onClick={() => setDialog(null)} data-testid="button-cancel-delete">Keep file</button><button className="action-button danger" onClick={removeFile} data-testid="button-confirm-delete"><Trash2 size={14} />Delete file</button></div></div></div></div>}
     </div>
