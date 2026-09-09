@@ -94,6 +94,11 @@ function guessCapacityKiB(device: DetectedDevice): number {
   return 32; // matches this project's "standard SaveKey" EEPROM 1 capacity
 }
 
+// Atari-style drive numbering: E1 = 0x50 .. E8 = 0x57.
+function driveLabelForAddress(address: number): string {
+  return `E${address - 0x50 + 1}`;
+}
+
 const initialDrives: Drive[] = [
   { id: 'E1', label: 'E1', address: 0x50, totalBytes: 32 * 1024, mode: 'savekey', canChangeMode: true },
   { id: 'E2', label: 'E2', address: 0x51, totalBytes: 64 * 1024, mode: 'tinyelf-fs', canChangeMode: false },
@@ -338,8 +343,7 @@ function Home() {
     const realFiles: TinyElfFile[] = [];
     const layouts: Record<string, { device: DetectedDevice; layout: TinyElfLayout }> = {};
     for (const device of devices) {
-      // Atari-style drive numbering: E1 = 0x50 .. E8 = 0x57.
-      const id = `E${device.startAddress - 0x50 + 1}`;
+      const id = driveLabelForAddress(device.startAddress);
       const layout = await readTinyElfHeader(bridge, device).catch(() => null);
       realDrives.push({
         id,
@@ -832,7 +836,7 @@ function Home() {
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="format-dialog-title">
             <div className="modal-head">
               <div>
-                <h2 id="format-dialog-title">Format device {hex(formatTarget.startAddress)}</h2>
+                <h2 id="format-dialog-title">Format device {driveLabelForAddress(formatTarget.startAddress)} ({hex(formatTarget.startAddress)})</h2>
                 <p>Writes only the boot sector, VTOC, and directory — existing data sectors are left untouched.</p>
               </div>
               <button className="modal-close" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-close-format-dialog">
@@ -854,12 +858,12 @@ function Home() {
                   ))}
                 </select>
               </label>
-              <div className="capacity-block" title="Computed from the chosen capacity — see firmware/pico-bridge README / tinyelf-format.ts for the exact layout rules">
-                <div className="capacity-line"><span>Sector size</span><strong>{formatLayout.sectorSize} B</strong></div>
-                <div className="capacity-line"><span>Total sectors</span><strong>{formatLayout.totalSectors}</strong></div>
-                <div className="capacity-line"><span>VTOC</span><strong>sector {formatLayout.vtocStart}, {formatLayout.vtocSectors} sector{formatLayout.vtocSectors === 1 ? '' : 's'}</strong></div>
-                <div className="capacity-line"><span>Directory</span><strong>sector {formatLayout.directoryStart}, {formatLayout.directorySectors} sector{formatLayout.directorySectors === 1 ? '' : 's'} · {formatLayout.maxFiles} files max</strong></div>
-                <div className="capacity-line"><span>Data region</span><strong>from sector {formatLayout.dataStart}</strong></div>
+              <div className="format-summary" title="Computed from the chosen capacity — see firmware/pico-bridge README / tinyelf-format.ts for the exact layout rules">
+                <div className="format-summary-line"><span>Sector size</span><strong>{formatLayout.sectorSize} B</strong></div>
+                <div className="format-summary-line"><span>Total sectors</span><strong>{formatLayout.totalSectors}</strong></div>
+                <div className="format-summary-line"><span>VTOC</span><strong>sector {formatLayout.vtocStart}, {formatLayout.vtocSectors} sector{formatLayout.vtocSectors === 1 ? '' : 's'}</strong></div>
+                <div className="format-summary-line"><span>Directory</span><strong>sector {formatLayout.directoryStart}, {formatLayout.directorySectors} sector{formatLayout.directorySectors === 1 ? '' : 's'} · {formatLayout.maxFiles} files max</strong></div>
+                <div className="format-summary-line"><span>Data region</span><strong>from sector {formatLayout.dataStart}</strong></div>
               </div>
               {formatStatus === 'error' && <div className="warning-copy">{formatMessage}</div>}
               {(formatStatus === 'running' || formatStatus === 'done') && <p className="protect-line">{formatMessage}</p>}
