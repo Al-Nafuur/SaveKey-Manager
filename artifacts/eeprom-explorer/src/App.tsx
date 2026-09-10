@@ -202,12 +202,16 @@ function hex(value: number, length = 2) {
   return value.toString(16).toUpperCase().padStart(length, '0');
 }
 
-// 16 space-separated hex bytes per line, for an editable block-data view.
+const HEX_BYTES_PER_ROW = 8;
+
+// Hex rows for an editable block-data view — 8 bytes per row, one row per
+// textarea line. The address gutter is a separate, synced-scroll element
+// (see the "hex-editor-gutter" div below), not part of this text, so the
+// editable value is pure hex bytes with nothing to strip back out.
 function bytesToHexString(bytes: Uint8Array | number[]): string {
   const rows: string[] = [];
-  for (let i = 0; i < bytes.length; i += 16) {
-    const row = Array.from(bytes.slice(i, i + 16), (byte) => hex(byte)).join(' ');
-    rows.push(row);
+  for (let i = 0; i < bytes.length; i += HEX_BYTES_PER_ROW) {
+    rows.push(Array.from(bytes.slice(i, i + HEX_BYTES_PER_ROW), (byte) => hex(byte)).join(' '));
   }
   return rows.join('\n');
 }
@@ -293,6 +297,7 @@ function Home() {
   const [dialog, setDialog] = useState<'delete' | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hexGutterRef = useRef<HTMLDivElement>(null);
   const picoBridge = usePicoBridge();
   const [formatTarget, setFormatTarget] = useState<DetectedDevice | null>(null);
   const [formatCapacityKiB, setFormatCapacityKiB] = useState(32);
@@ -1019,13 +1024,26 @@ function Home() {
                           <div className="detail-row"><span>Block data</span><span>{selectedAllocationBytes ? `${selectedAllocationBytes.length} bytes` : 'Loading…'}</span></div>
                           {selectedAllocationBytes && (
                             <>
-                              <textarea
-                                className="block-hex-editor"
-                                value={allocationHexDraft}
-                                onChange={(event) => setAllocationHexDraft(event.target.value)}
-                                spellCheck={false}
-                                data-testid="textarea-block-hex"
-                              />
+                              <div className="hex-editor-wrap">
+                                <div className="hex-editor-gutter" ref={hexGutterRef}>
+                                  {Array.from(
+                                    { length: Math.max(1, Math.ceil(selectedAllocationBytes.length / HEX_BYTES_PER_ROW)) },
+                                    (_, row) => <div key={row}>{hex(row * HEX_BYTES_PER_ROW, 4)}</div>,
+                                  )}
+                                </div>
+                                <textarea
+                                  className="block-hex-editor"
+                                  value={allocationHexDraft}
+                                  onChange={(event) => setAllocationHexDraft(event.target.value)}
+                                  onScroll={(event) => {
+                                    if (hexGutterRef.current) hexGutterRef.current.scrollTop = event.currentTarget.scrollTop;
+                                  }}
+                                  rows={Math.max(4, Math.ceil(selectedAllocationBytes.length / HEX_BYTES_PER_ROW))}
+                                  spellCheck={false}
+                                  wrap="off"
+                                  data-testid="textarea-block-hex"
+                                />
+                              </div>
                               {allocationWriteStatus === 'error' && <div className="warning-copy">{allocationWriteMessage}</div>}
                               <div className="modal-actions">
                                 <button
