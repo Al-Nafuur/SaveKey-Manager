@@ -33,6 +33,13 @@ import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
 import { computeTinyElfLayout, formatDevice, readTinyElfHeader, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
 import { loadFileContent, saveFile } from '@/lib/tinyelf-save';
+import {
+  buildPageOwners,
+  fetchSaveKeyRegistry,
+  type SaveKeyAllocationEntry,
+  type SaveKeyRegistry,
+} from '@/lib/savekey-registry';
+import { readPageOccupancy } from '@/lib/savekey-pages';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -57,24 +64,10 @@ type TinyElfFile = {
   startSector?: number;
 };
 type ActivityRecord = { id: number; time: string; message: string; detail?: string };
-type AllocationKind = 'system' | 'game';
-type AllocationStatus = 'allocated' | 'reserved' | 'abandoned';
-type AllocationEntry = {
-  id: string;
-  title: string;
-  developer?: string;
-  platform?: string;
-  kind: AllocationKind;
-  status: AllocationStatus;
-  pageStart: number;
-  pageEnd: number;
-  verified?: string;
-  notes?: string;
-  urls?: string[];
-  // Whether THIS particular demo stick actually has save data written in this
-  // slot, vs. the slot merely being claimed/reserved by the registry above.
-  hasSaveData: boolean;
-};
+// Shared shape for both the demo allocation entries below and the real
+// entries fetched from the community registry — see lib/savekey-registry.ts.
+type AllocationEntry = SaveKeyAllocationEntry;
+type AllocationStatus = AllocationEntry['status'];
 
 const queryClient = new QueryClient();
 
@@ -105,36 +98,40 @@ const initialDrives: Drive[] = [
 ];
 
 // A curated, real subset of https://github.com/atariage-community/savekey-allocation-list/blob/main/allocations.yaml
-// `hasSaveData` is this demo's own invention: which of these claimed slots this
-// particular (simulated) stick actually has bytes written in, vs. slots that
-// are merely reserved by the registry but never played/saved to on this unit.
+// — used only while disconnected/demoing; a real connected device fetches
+// and uses the live registry instead (see fetchSaveKeyRegistry()).
 const allocationEntries: AllocationEntry[] = [
-  { id: 'system-settings', title: 'System Settings', kind: 'system', status: 'allocated', pageStart: 0x000, pageEnd: 0x000, notes: 'TV mode', hasSaveData: true },
-  { id: 'man-goes-down', title: 'Man Goes Down', developer: 'Alex Herbert', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x001, pageEnd: 0x001, verified: '2026-08-17', notes: "WIP, never finalized nor published 'officially'. Arguably, should retain its slot due to wide adoption.", urls: ['https://forums.atariage.com/topic/53689-my-1st-atari-2600-game-man-goes-down/page/18/'], hasSaveData: false },
-  { id: 'fall-down', title: 'Fall Down', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x002, pageEnd: 0x002, verified: '2026-08-17', urls: ['https://store.atariage.com/products/fall-down-atari-2600'], hasSaveData: true },
-  { id: 'go-fish', title: 'Go Fish!', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x003, pageEnd: 0x003, verified: '2026-08-17', urls: ['https://store.atariage.com/products/go-fish-atari-2600'], hasSaveData: false },
-  { id: 'strat-o-gems-deluxe', title: 'Strat-O-Gems Deluxe', developer: 'John Payson', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x004, pageEnd: 0x007, verified: '2026-08-18', hasSaveData: false },
-  { id: 'astar', title: 'AStar', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x008, pageEnd: 0x008, verified: '2026-08-18', hasSaveData: true },
-  { id: 'bonq', title: 'bonQ', developer: 'Ken Siders', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x009, pageEnd: 0x00a, verified: '2026-08-18', hasSaveData: false },
-  { id: 'lead-pitch-omicron-palomino', title: "Lead / Pitch'n'Catch / Omicron / Palomino", developer: 'Simone Serra', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00b, pageEnd: 0x00b, verified: '2026-08-19', hasSaveData: false },
-  { id: 'elevators-amiss', title: 'Elevators Amiss', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00c, pageEnd: 0x00c, verified: '2026-08-17', hasSaveData: true },
-  { id: 'juno-first', title: 'Juno First', developer: 'Chris Walton', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00d, pageEnd: 0x00d, verified: '2026-08-17', hasSaveData: false },
-  { id: 'karate-master', title: 'Karate Master', developer: 'Greg Kennedy', platform: 'Atari 2600', kind: 'game', status: 'reserved', pageStart: 0x00e, pageEnd: 0x00e, verified: '2026-08-18', notes: 'Never released on cart, last update 2009, abandoned?', hasSaveData: false },
-  { id: 'fate-of-a-bait', title: 'Fate Of A Bait', developer: 'Christian Hammers', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00f, pageEnd: 0x00f, verified: '2026-08-19', notes: "Has taken the slot of Mark Ball's 'Halloween game TBA', which apparently never was", hasSaveData: false },
-  { id: 'duck-attack', title: 'Duck Attack!', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x010, pageEnd: 0x011, verified: '2026-08-17', hasSaveData: true },
-  { id: 'monster', title: 'Monster!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'reserved', pageStart: 0x012, pageEnd: 0x012, verified: '2026-08-17', notes: 'Never released on cart, abandoned?', hasSaveData: false },
-  { id: 'worm', title: 'Worm!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x013, pageEnd: 0x013, verified: '2026-08-17', hasSaveData: true },
-  { id: 'indenture-dragon-attack', title: 'Indenture / Dragon Attack', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'abandoned', pageStart: 0x014, pageEnd: 0x015, verified: '2026-08-31', hasSaveData: false },
+  { id: 'system-settings', title: 'System Settings', kind: 'system', status: 'allocated', pageStart: 0x000, pageEnd: 0x000, notes: 'TV mode' },
+  { id: 'man-goes-down', title: 'Man Goes Down', developer: 'Alex Herbert', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x001, pageEnd: 0x001, verified: '2026-08-17', notes: "WIP, never finalized nor published 'officially'. Arguably, should retain its slot due to wide adoption.", urls: ['https://forums.atariage.com/topic/53689-my-1st-atari-2600-game-man-goes-down/page/18/'] },
+  { id: 'fall-down', title: 'Fall Down', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x002, pageEnd: 0x002, verified: '2026-08-17', urls: ['https://store.atariage.com/products/fall-down-atari-2600'] },
+  { id: 'go-fish', title: 'Go Fish!', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x003, pageEnd: 0x003, verified: '2026-08-17', urls: ['https://store.atariage.com/products/go-fish-atari-2600'] },
+  { id: 'strat-o-gems-deluxe', title: 'Strat-O-Gems Deluxe', developer: 'John Payson', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x004, pageEnd: 0x007, verified: '2026-08-18' },
+  { id: 'astar', title: 'AStar', developer: 'Aaron Curtis', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x008, pageEnd: 0x008, verified: '2026-08-18' },
+  { id: 'bonq', title: 'bonQ', developer: 'Ken Siders', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x009, pageEnd: 0x00a, verified: '2026-08-18' },
+  { id: 'lead-pitch-omicron-palomino', title: "Lead / Pitch'n'Catch / Omicron / Palomino", developer: 'Simone Serra', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00b, pageEnd: 0x00b, verified: '2026-08-19' },
+  { id: 'elevators-amiss', title: 'Elevators Amiss', developer: 'Bob Montgomery', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00c, pageEnd: 0x00c, verified: '2026-08-17' },
+  { id: 'juno-first', title: 'Juno First', developer: 'Chris Walton', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00d, pageEnd: 0x00d, verified: '2026-08-17' },
+  { id: 'karate-master', title: 'Karate Master', developer: 'Greg Kennedy', platform: 'Atari 2600', kind: 'game', status: 'reserved', pageStart: 0x00e, pageEnd: 0x00e, verified: '2026-08-18', notes: 'Never released on cart, last update 2009, abandoned?' },
+  { id: 'fate-of-a-bait', title: 'Fate Of A Bait', developer: 'Christian Hammers', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x00f, pageEnd: 0x00f, verified: '2026-08-19', notes: "Has taken the slot of Mark Ball's 'Halloween game TBA', which apparently never was" },
+  { id: 'duck-attack', title: 'Duck Attack!', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'allocated', pageStart: 0x010, pageEnd: 0x011, verified: '2026-08-17' },
+  { id: 'monster', title: 'Monster!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'reserved', pageStart: 0x012, pageEnd: 0x012, verified: '2026-08-17', notes: 'Never released on cart, abandoned?' },
+  { id: 'worm', title: 'Worm!', developer: 'Mark Ball', platform: 'Atari 7800', kind: 'game', status: 'allocated', pageStart: 0x013, pageEnd: 0x013, verified: '2026-08-17' },
+  { id: 'indenture-dragon-attack', title: 'Indenture / Dragon Attack', developer: 'Will Nicholes', platform: 'Atari 2600', kind: 'game', status: 'abandoned', pageStart: 0x014, pageEnd: 0x015, verified: '2026-08-31' },
 ];
 
-const pageOwners: (AllocationEntry | null)[] = Array.from({ length: TOTAL_PAGES }, () => null);
-for (const entry of allocationEntries) {
-  for (let page = entry.pageStart; page <= entry.pageEnd; page++) pageOwners[page] = entry;
-}
+// Demo-only stand-in for "has this particular (simulated) stick actually had
+// bytes written here" — a real device answers this from actual EEPROM
+// content instead (see readPageOccupancy()).
+const DEMO_PAGES_WITH_DATA = new Set([0x000, 0x002, 0x008, 0x00c, 0x010, 0x011, 0x013]);
 
-function pageStatus(page: number): AllocationStatus | 'scratch' | 'free' {
-  const owner = pageOwners[page];
-  if (owner) return owner.status;
+const demoPageOwners = buildPageOwners(allocationEntries, TOTAL_PAGES);
+
+// A page can have more than one owner for real registry data (shared pages
+// via `addresses`) — status/first-owner-based rendering just uses the first
+// one, which covers the overwhelming common case of one owner per page.
+function pageStatus(owners: AllocationEntry[][], page: number): AllocationStatus | 'scratch' | 'free' {
+  const list = owners[page];
+  if (list && list.length > 0) return list[0].status;
   if (page >= SCRATCHPAD_START && page <= SCRATCHPAD_END) return 'scratch';
   return 'free';
 }
@@ -242,11 +239,13 @@ function tinyElfLayout(drive: Drive) {
 // device — permanently unavailable to files, but not reflected in any
 // TinyElfFile entry, so callers must add it explicitly (see
 // systemOverheadBytes() in Home()).
-function driveUsedBytes(drive: Drive, files: TinyElfFile[], systemOverheadBytes = 0) {
+function driveUsedBytes(drive: Drive, files: TinyElfFile[], systemOverheadBytes = 0, realSaveKeyPages?: boolean[]) {
   if (drive.mode === 'savekey') {
     // Only pages that actually have save data written on this device count as
     // "used" — a reserved-but-empty slot isn't occupying real storage yet.
-    const writtenPages = allocationEntries.filter((entry) => entry.hasSaveData).reduce((total, entry) => total + (entry.pageEnd - entry.pageStart + 1), 0);
+    // Real devices: count actual occupied pages (see readPageOccupancy()).
+    // Demo: same idea, using the hand-authored demo page set.
+    const writtenPages = realSaveKeyPages ? realSaveKeyPages.filter(Boolean).length : DEMO_PAGES_WITH_DATA.size;
     return writtenPages * 64;
   }
   // A file's size here is always whole sectors (sectorCount x sectorSize,
@@ -276,11 +275,28 @@ function Home() {
   const [formatStatus, setFormatStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [formatMessage, setFormatMessage] = useState('');
   const [liveDrives, setLiveDrives] = useState<Record<string, { device: DetectedDevice; layout: TinyElfLayout }>>({});
+  const [liveSaveKeyPages, setLiveSaveKeyPages] = useState<Record<string, boolean[]>>({});
+  const [saveKeyRegistry, setSaveKeyRegistry] = useState<SaveKeyRegistry | null>(null);
+  const [saveKeyRegistryStatus, setSaveKeyRegistryStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
   const selectedFile = files.find((file) => file.id === selectedFileId) ?? null;
-  const selectedAllocation = allocationEntries.find((entry) => entry.id === selectedAllocationId) ?? null;
+
+  // A real connected classic-format drive uses the live community registry
+  // (once fetched) instead of the hardcoded demo entries — see the
+  // app-start fetch effect below.
+  const activeSaveKeyPages = liveSaveKeyPages[activeDriveId];
+  const isRealSaveKeyDrive = isSaveKeyView && activeSaveKeyPages !== undefined;
+  const activeAllocationEntries = isRealSaveKeyDrive ? (saveKeyRegistry?.entries ?? []) : allocationEntries;
+  const activeTotalPages = isRealSaveKeyDrive ? (saveKeyRegistry?.totalPages ?? TOTAL_PAGES) : TOTAL_PAGES;
+  const activePageOwners = useMemo(
+    () => (isRealSaveKeyDrive ? buildPageOwners(activeAllocationEntries, activeTotalPages) : demoPageOwners),
+    [isRealSaveKeyDrive, activeAllocationEntries, activeTotalPages],
+  );
+  const activePageHasData = (page: number) =>
+    activeSaveKeyPages ? activeSaveKeyPages[page] === true : DEMO_PAGES_WITH_DATA.has(page);
+  const selectedAllocation = activeAllocationEntries.find((entry) => entry.id === selectedAllocationId) ?? null;
 
   const driveFiles = useMemo(() => files.filter((file) => file.driveId === activeDriveId), [activeDriveId, files]);
   const visibleFiles = useMemo(
@@ -289,16 +305,16 @@ function Home() {
   );
   const visibleAllocations = useMemo(
     () =>
-      allocationEntries.filter((entry) =>
+      activeAllocationEntries.filter((entry) =>
         `${entry.title} ${entry.developer ?? ''} ${entry.platform ?? ''}`.toLowerCase().includes(query.toLowerCase()),
       ),
-    [query],
+    [activeAllocationEntries, query],
   );
   const systemOverheadBytes = (driveId: string) => {
     const live = liveDrives[driveId];
     return live ? live.layout.dataStart * live.layout.sectorSize : 0;
   };
-  const usedBytes = driveUsedBytes(activeDrive, files, systemOverheadBytes(activeDrive.id));
+  const usedBytes = driveUsedBytes(activeDrive, files, systemOverheadBytes(activeDrive.id), activeSaveKeyPages);
   const formatLayout = useMemo(() => computeTinyElfLayout(formatCapacityKiB * 1024), [formatCapacityKiB]);
 
   const pushActivity = (message: string, detail?: string) => {
@@ -338,22 +354,23 @@ function Home() {
   // once real hardware is present. Reverts to the demo data on disconnect.
   // Exposed as a function (not just inline in the effect) so a real SAVE
   // can trigger a re-read of just-changed drives afterwards.
-  const loadLiveData = useCallback(async (bridge: PicoBridge, devices: DetectedDevice[]) => {
+  const loadLiveData = useCallback(async (bridge: PicoBridge, devices: DetectedDevice[], registry: SaveKeyRegistry | null) => {
     const realDrives: Drive[] = [];
     const realFiles: TinyElfFile[] = [];
     const layouts: Record<string, { device: DetectedDevice; layout: TinyElfLayout }> = {};
+    const savekeyPages: Record<string, boolean[]> = {};
     for (const device of devices) {
       const id = driveLabelForAddress(device.startAddress);
       const layout = await readTinyElfHeader(bridge, device).catch(() => null);
-      realDrives.push({
-        id,
-        label: id,
-        address: device.startAddress,
-        totalBytes: layout ? layout.sectorSize * layout.totalSectors : device.capacityBytes,
-        mode: 'tinyelf-fs',
-        canChangeMode: false,
-      });
       if (layout) {
+        realDrives.push({
+          id,
+          label: id,
+          address: device.startAddress,
+          totalBytes: layout.sectorSize * layout.totalSectors,
+          mode: 'tinyelf-fs',
+          canChangeMode: false,
+        });
         layouts[id] = { device, layout };
         const entries = await readDirectory(bridge, device, layout).catch(() => []);
         for (const entry of entries) {
@@ -379,9 +396,49 @@ function Home() {
             startSector: entry.startSector,
           });
         }
+      } else {
+        // Not TinyELF-formatted — treat as the classic SaveKey allocation
+        // format instead. Page size/count come from the registry once
+        // loaded (it's the single source of truth per the project docs);
+        // fall back to the well-known SaveKey hardware constants (32 KiB /
+        // 64 B pages) so occupancy can still be read before/without it.
+        const pageSize = registry?.pageSize ?? 64;
+        const totalPages = registry?.totalPages ?? TOTAL_PAGES;
+        const occupancy = await readPageOccupancy(bridge, device, pageSize, totalPages).catch(() => null);
+        realDrives.push({
+          id,
+          label: id,
+          address: device.startAddress,
+          totalBytes: pageSize * totalPages,
+          mode: 'savekey',
+          canChangeMode: false,
+        });
+        if (occupancy) savekeyPages[id] = occupancy;
       }
     }
-    return { realDrives, realFiles, layouts };
+    return { realDrives, realFiles, layouts, savekeyPages };
+  }, []);
+
+  // Always load the live community allocation registry on app start (not
+  // just once a real classic-format device shows up) so it's ready the
+  // moment one connects, and stays the single source of truth per the
+  // registry's own README.
+  useEffect(() => {
+    let cancelled = false;
+    fetchSaveKeyRegistry()
+      .then((registry) => {
+        if (cancelled) return;
+        setSaveKeyRegistry(registry);
+        setSaveKeyRegistryStatus('loaded');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSaveKeyRegistryStatus('error');
+        pushActivity('Allocation registry load failed', error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -398,19 +455,20 @@ function Home() {
 
     let cancelled = false;
     (async () => {
-      const { realDrives, realFiles, layouts } = await loadLiveData(bridge, picoBridge.devices);
+      const { realDrives, realFiles, layouts, savekeyPages } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
       if (!cancelled && realDrives.length > 0) {
         setDrives(realDrives);
         setFiles(realFiles);
         setActiveDriveId(realDrives[0].id);
         setLiveDrives(layouts);
+        setLiveSaveKeyPages(savekeyPages);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [picoBridge.status, picoBridge.devices, picoBridge.bridge, loadLiveData]);
+  }, [picoBridge.status, picoBridge.devices, picoBridge.bridge, loadLiveData, saveKeyRegistry]);
 
   // Lazily loads a real file's actual content the moment it's selected,
   // instead of eagerly for every listed file — walks the sector chain via
@@ -479,10 +537,11 @@ function Home() {
       try {
         pushActivity('Uploading file', `${pickedFile.name} · ${formatSize(bytes.length)}`);
         const saved = await saveFile(bridge, live.device, live.layout, pickedFile.name, bytes);
-        const { realDrives, realFiles, layouts } = await loadLiveData(bridge, picoBridge.devices);
+        const { realDrives, realFiles, layouts, savekeyPages } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
         setDrives(realDrives);
         setFiles(realFiles);
         setLiveDrives(layouts);
+        setLiveSaveKeyPages(savekeyPages);
         setSelectedFileId(`${activeDriveId}-${saved.startSector}`);
         pushActivity('File saved', `${saved.name}.${saved.extension} · sector ${saved.startSector} · ${saved.sectorCount} sector${saved.sectorCount === 1 ? '' : 's'}`);
       } catch (error) {
@@ -537,9 +596,26 @@ function Home() {
     setDialog(null);
   };
 
-  const refreshDrive = () => {
+  const refreshDrive = async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
+    const bridge = picoBridge.bridge;
+    if (picoBridge.status === 'connected' && bridge) {
+      pushActivity(isSaveKeyView ? 'Reloading registry' : 'Refreshing drive', isSaveKeyView ? 'Re-reading EEPROM page occupancy' : 'Reading directory table');
+      try {
+        const { realDrives, realFiles, layouts, savekeyPages } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
+        setDrives(realDrives);
+        setFiles(realFiles);
+        setLiveDrives(layouts);
+        setLiveSaveKeyPages(savekeyPages);
+        pushActivity(isSaveKeyView ? 'Registry reloaded' : 'Drive refreshed', isSaveKeyView ? `${activeTotalPages} pages re-read` : `${realFiles.filter((file) => file.driveId === activeDriveId).length} files indexed`);
+      } catch (error) {
+        pushActivity('Refresh failed', error instanceof Error ? error.message : String(error));
+      }
+      setIsRefreshing(false);
+      return;
+    }
+
     pushActivity(isSaveKeyView ? 'Reloading registry' : 'Refreshing drive', isSaveKeyView ? 'Re-reading allocation list' : 'Reading directory table');
     window.setTimeout(() => {
       setIsRefreshing(false);
@@ -548,8 +624,17 @@ function Home() {
   };
 
   const selectPage = (page: number) => {
-    const owner = pageOwners[page];
-    if (owner) setSelectedAllocationId(owner.id);
+    const owners = activePageOwners[page];
+    if (owners && owners.length > 0) setSelectedAllocationId(owners[0].id);
+  };
+
+  // An entry can span several pages — "has data" for the whole entry means
+  // at least one of its pages actually has something written.
+  const entryHasAnyData = (entry: AllocationEntry) => {
+    for (let page = entry.pageStart; page <= entry.pageEnd; page++) {
+      if (activePageHasData(page)) return true;
+    }
+    return false;
   };
 
   const selectedPreview = selectedFile?.bytes.length
@@ -575,7 +660,7 @@ function Home() {
         </nav>
         <div className="drive-list">
           {drives.map((drive) => {
-            const driveUsed = driveUsedBytes(drive, files, systemOverheadBytes(drive.id));
+            const driveUsed = driveUsedBytes(drive, files, systemOverheadBytes(drive.id), liveSaveKeyPages[drive.id]);
             return (
               <div className={`drive-card ${drive.id === activeDriveId ? 'active' : ''}`} key={drive.id} onClick={() => selectDrive(drive.id)} data-testid={`card-drive-${drive.id}`}>
                 <div className="drive-mini-head">
@@ -643,21 +728,24 @@ function Home() {
               <div className="panel-head">
                 <div className="panel-title">
                   <LayoutGrid size={18} className="folder-icon" />
-                  <div><h2>{activeDrive.label} · Allocation map</h2><p>{allocationEntries.filter((entry) => entry.hasSaveData).length} of {allocationEntries.length} known slots have data on this stick</p></div>
+                  <div><h2>{activeDrive.label} · Allocation map</h2><p>{isRealSaveKeyDrive ? `${activeSaveKeyPages!.filter(Boolean).length} of ${activeTotalPages} pages have data on this stick` : `${allocationEntries.filter((entry) => DEMO_PAGES_WITH_DATA.has(entry.pageStart)).length} of ${allocationEntries.length} known slots have data on this stick`}</p></div>
                 </div>
-                <span className="folder-count">{allocationEntries.length}</span>
+                <span className="folder-count">{activeAllocationEntries.length}</span>
               </div>
               <div className="page-map" role="grid" aria-label="EEPROM page map">
-                {Array.from({ length: TOTAL_PAGES }, (_, page) => {
-                  const status = pageStatus(page);
-                  const owner = pageOwners[page];
+                {Array.from({ length: activeTotalPages }, (_, page) => {
+                  const status = pageStatus(activePageOwners, page);
+                  const owners = activePageOwners[page] ?? [];
+                  const owner = owners[0] ?? null;
+                  const hasData = activePageHasData(page);
+                  const ownerNames = owners.map((o) => o.title).join(' / ');
                   const dataTitle = owner
-                    ? `${hex(page, 3)} · ${owner.title} — ${owner.hasSaveData ? 'save data present' : 'reserved, no data on this device'}`
-                    : `${hex(page, 3)} · ${status}`;
+                    ? `${hex(page, 3)} · ${ownerNames} — ${hasData ? 'has data' : 'reserved, no data on this device'}`
+                    : `${hex(page, 3)} · ${hasData ? 'has data' : status}`;
                   return (
                     <button
                       key={page}
-                      className={`page-cell status-${status} ${owner?.hasSaveData ? 'has-data' : ''} ${owner && owner.id === selectedAllocationId ? 'selected' : ''}`}
+                      className={`page-cell status-${status} ${hasData ? 'has-data' : ''} ${owner && owner.id === selectedAllocationId ? 'selected' : ''}`}
                       onClick={() => selectPage(page)}
                       title={dataTitle}
                       data-testid={`page-cell-${page}`}
@@ -683,7 +771,7 @@ function Home() {
                       <td>{entry.platform ?? '—'}</td>
                       <td>{hex(entry.pageStart, 3)}–{hex(entry.pageEnd, 3)}</td>
                       <td><span className={`tag status-${entry.status}`}>{entry.status}</span></td>
-                      <td>{entry.hasSaveData ? <span className="tag has-data-tag">data</span> : <span className="tag no-data-tag">empty</span>}</td>
+                      <td>{entryHasAnyData(entry) ? <span className="tag has-data-tag">data</span> : <span className="tag no-data-tag">empty</span>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -793,7 +881,7 @@ function Home() {
                 <div className="capacity-block">
                   <div className="capacity-line"><span>used / free</span><strong>{formatSize(usedBytes)} / {formatSize(activeDrive.totalBytes - usedBytes)}</strong></div>
                   <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
-                  <div className="capacity-line"><span>{isSaveKeyView ? 'slots with data' : 'directory entries'}</span><strong>{isSaveKeyView ? `${allocationEntries.filter((entry) => entry.hasSaveData).length} of ${allocationEntries.length} known slots` : `${driveFiles.length} files`}</strong></div>
+                  <div className="capacity-line"><span>{isSaveKeyView ? 'pages with data' : 'directory entries'}</span><strong>{isSaveKeyView ? `${isRealSaveKeyDrive ? activeSaveKeyPages!.filter(Boolean).length : DEMO_PAGES_WITH_DATA.size} of ${activeTotalPages} pages` : `${driveFiles.length} files`}</strong></div>
                 </div>
                 {!isSaveKeyView && (() => {
                   const layout = tinyElfLayout(activeDrive);
@@ -819,7 +907,7 @@ function Home() {
                   ) : (
                     <div className="allocation-detail">
                       <div className="preview-file-title"><LayoutGrid size={15} />{selectedAllocation.title}<small className={`status-${selectedAllocation.status}`}>{selectedAllocation.status}</small></div>
-                      <div className={`detail-row detail-data-row ${selectedAllocation.hasSaveData ? 'has-data' : 'no-data'}`}><span>On this device</span><span>{selectedAllocation.hasSaveData ? 'Save data present' : 'No data — slot reserved only'}</span></div>
+                      <div className={`detail-row detail-data-row ${entryHasAnyData(selectedAllocation) ? 'has-data' : 'no-data'}`}><span>On this device</span><span>{entryHasAnyData(selectedAllocation) ? 'Save data present' : 'No data — slot reserved only'}</span></div>
                       <div className="detail-row"><span>Kind</span><span>{selectedAllocation.kind}</span></div>
                       {selectedAllocation.developer && <div className="detail-row"><span>Developer</span><span>{selectedAllocation.developer}</span></div>}
                       {selectedAllocation.platform && <div className="detail-row"><span>Platform</span><span>{selectedAllocation.platform}</span></div>}

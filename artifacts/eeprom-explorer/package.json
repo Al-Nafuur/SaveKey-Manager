@@ -69,5 +69,8 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   }
 }
