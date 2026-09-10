@@ -4,7 +4,6 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import {
   Activity,
   Archive,
-  CircuitBoard,
   Download,
   ExternalLink,
   FileCode2,
@@ -745,7 +744,7 @@ function Home() {
     <div className="console-app">
       <aside className="console-sidebar" data-testid="sidebar-drive">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true"><CircuitBoard size={22} strokeWidth={1.8} /></div>
+          <div className="brand-mark" aria-hidden="true"><img src="/icons/icon-192.png" alt="" width={30} height={30} /></div>
           <div>
             <p className="brand-name">SaveKey-Manager</p>
              <p className="brand-sub">i2c utility · rev 0.2</p>

@@ -128,6 +128,7 @@ button:disabled { cursor: not-allowed; opacity: .46; }
   border-radius: 1px; color: #20234d; background: #ffb000;
   box-shadow: 3px 3px 0 #0e1233;
 }
+.brand-mark img { display: block; border-radius: 1px; }
 .brand-name { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -.04em; color: #ffe9a6; }
 .brand-sub { margin: 5px 0 0; color: #8fd9d2; font: 9px var(--app-font-mono); letter-spacing: .04em; text-transform: uppercase; }
 .side-label {
