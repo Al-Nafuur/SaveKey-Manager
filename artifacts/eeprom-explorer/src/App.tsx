@@ -39,7 +39,7 @@ import {
   type SaveKeyAllocationEntry,
   type SaveKeyRegistry,
 } from '@/lib/savekey-registry';
-import { readPageOccupancy } from '@/lib/savekey-pages';
+import { readPageOccupancy, readPageRange, writePageRange } from '@/lib/savekey-pages';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -202,6 +202,30 @@ function hex(value: number, length = 2) {
   return value.toString(16).toUpperCase().padStart(length, '0');
 }
 
+// 16 space-separated hex bytes per line, for an editable block-data view.
+function bytesToHexString(bytes: Uint8Array | number[]): string {
+  const rows: string[] = [];
+  for (let i = 0; i < bytes.length; i += 16) {
+    const row = Array.from(bytes.slice(i, i + 16), (byte) => hex(byte)).join(' ');
+    rows.push(row);
+  }
+  return rows.join('\n');
+}
+
+// Parses a hex-byte textarea back into bytes — whitespace-insensitive, but
+// strict about the total count and each token being a valid byte, so a
+// typo can't silently write the wrong number of bytes or garbage.
+function parseHexString(text: string, expectedLength: number): number[] | null {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length !== expectedLength) return null;
+  const bytes: number[] = [];
+  for (const token of tokens) {
+    if (!/^[0-9a-fA-F]{1,2}$/.test(token)) return null;
+    bytes.push(parseInt(token, 16));
+  }
+  return bytes;
+}
+
 function nowTime() {
   return new Date().toLocaleTimeString([], { hour12: false });
 }
@@ -276,6 +300,11 @@ function Home() {
   const [formatMessage, setFormatMessage] = useState('');
   const [liveDrives, setLiveDrives] = useState<Record<string, { device: DetectedDevice; layout: TinyElfLayout }>>({});
   const [liveSaveKeyPages, setLiveSaveKeyPages] = useState<Record<string, boolean[]>>({});
+  const [liveSaveKeyDevices, setLiveSaveKeyDevices] = useState<Record<string, { device: DetectedDevice; pageSize: number }>>({});
+  const [selectedAllocationBytes, setSelectedAllocationBytes] = useState<number[] | null>(null);
+  const [allocationHexDraft, setAllocationHexDraft] = useState('');
+  const [allocationWriteStatus, setAllocationWriteStatus] = useState<'idle' | 'writing' | 'error'>('idle');
+  const [allocationWriteMessage, setAllocationWriteMessage] = useState('');
   const [saveKeyRegistry, setSaveKeyRegistry] = useState<SaveKeyRegistry | null>(null);
   const [saveKeyRegistryStatus, setSaveKeyRegistryStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
@@ -359,6 +388,7 @@ function Home() {
     const realFiles: TinyElfFile[] = [];
     const layouts: Record<string, { device: DetectedDevice; layout: TinyElfLayout }> = {};
     const savekeyPages: Record<string, boolean[]> = {};
+    const savekeyDevices: Record<string, { device: DetectedDevice; pageSize: number }> = {};
     for (const device of devices) {
       const id = driveLabelForAddress(device.startAddress);
       const layout = await readTinyElfHeader(bridge, device).catch(() => null);
@@ -414,9 +444,10 @@ function Home() {
           canChangeMode: false,
         });
         if (occupancy) savekeyPages[id] = occupancy;
+        savekeyDevices[id] = { device, pageSize };
       }
     }
-    return { realDrives, realFiles, layouts, savekeyPages };
+    return { realDrives, realFiles, layouts, savekeyPages, savekeyDevices };
   }, []);
 
   // Always load the live community allocation registry on app start (not
@@ -455,13 +486,14 @@ function Home() {
 
     let cancelled = false;
     (async () => {
-      const { realDrives, realFiles, layouts, savekeyPages } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
+      const { realDrives, realFiles, layouts, savekeyPages, savekeyDevices } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
       if (!cancelled && realDrives.length > 0) {
         setDrives(realDrives);
         setFiles(realFiles);
         setActiveDriveId(realDrives[0].id);
         setLiveDrives(layouts);
         setLiveSaveKeyPages(savekeyPages);
+        setLiveSaveKeyDevices(savekeyDevices);
       }
     })();
 
@@ -501,6 +533,66 @@ function Home() {
     };
   }, [selectedFile, liveDrives, picoBridge.bridge]);
 
+  // Lazily loads a real allocation entry's actual page bytes the moment
+  // it's selected in the classic SaveKey view, so they can be viewed and
+  // edited — demo entries have nothing real to read, so this only runs for
+  // a real, connected classic-format drive.
+  useEffect(() => {
+    setSelectedAllocationBytes(null);
+    setAllocationHexDraft('');
+    setAllocationWriteStatus('idle');
+    setAllocationWriteMessage('');
+
+    const bridge = picoBridge.bridge;
+    const savekey = liveSaveKeyDevices[activeDriveId];
+    if (!bridge || !savekey || !selectedAllocation) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const bytes = await readPageRange(bridge, savekey.device, savekey.pageSize, selectedAllocation.pageStart, selectedAllocation.pageEnd);
+        if (cancelled) return;
+        setSelectedAllocationBytes(Array.from(bytes));
+        setAllocationHexDraft(bytesToHexString(bytes));
+      } catch (error) {
+        if (cancelled) return;
+        pushActivity('Load failed', error instanceof Error ? error.message : String(error));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAllocation, activeDriveId, liveSaveKeyDevices, picoBridge.bridge]);
+
+  const writeAllocationBytes = async () => {
+    const bridge = picoBridge.bridge;
+    const savekey = liveSaveKeyDevices[activeDriveId];
+    if (!bridge || !savekey || !selectedAllocation) return;
+    const pageCount = selectedAllocation.pageEnd - selectedAllocation.pageStart + 1;
+    const parsed = parseHexString(allocationHexDraft, pageCount * savekey.pageSize);
+    if (!parsed) {
+      setAllocationWriteStatus('error');
+      setAllocationWriteMessage(`Expected exactly ${pageCount * savekey.pageSize} valid hex bytes.`);
+      return;
+    }
+    setAllocationWriteStatus('writing');
+    setAllocationWriteMessage('');
+    try {
+      await writePageRange(bridge, savekey.device, savekey.pageSize, selectedAllocation.pageStart, selectedAllocation.pageEnd, new Uint8Array(parsed));
+      setSelectedAllocationBytes(parsed);
+      setAllocationWriteStatus('idle');
+      pushActivity('Block written', `${selectedAllocation.title} · pages ${hex(selectedAllocation.pageStart, 3)}–${hex(selectedAllocation.pageEnd, 3)}`);
+      // Occupancy may have changed (e.g. now all-0xFF, or no longer) —
+      // refresh just this drive's page map rather than a full reconnect.
+      const occupancy = await readPageOccupancy(bridge, savekey.device, savekey.pageSize, activeTotalPages).catch(() => null);
+      if (occupancy) setLiveSaveKeyPages((prev) => ({ ...prev, [activeDriveId]: occupancy }));
+    } catch (error) {
+      setAllocationWriteStatus('error');
+      setAllocationWriteMessage(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const selectDrive = (driveId: string) => {
     if (driveId === activeDriveId) return;
     setActiveDriveId(driveId);
@@ -537,11 +629,12 @@ function Home() {
       try {
         pushActivity('Uploading file', `${pickedFile.name} · ${formatSize(bytes.length)}`);
         const saved = await saveFile(bridge, live.device, live.layout, pickedFile.name, bytes);
-        const { realDrives, realFiles, layouts, savekeyPages } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
+        const { realDrives, realFiles, layouts, savekeyPages, savekeyDevices } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
         setDrives(realDrives);
         setFiles(realFiles);
         setLiveDrives(layouts);
         setLiveSaveKeyPages(savekeyPages);
+        setLiveSaveKeyDevices(savekeyDevices);
         setSelectedFileId(`${activeDriveId}-${saved.startSector}`);
         pushActivity('File saved', `${saved.name}.${saved.extension} · sector ${saved.startSector} · ${saved.sectorCount} sector${saved.sectorCount === 1 ? '' : 's'}`);
       } catch (error) {
@@ -603,11 +696,12 @@ function Home() {
     if (picoBridge.status === 'connected' && bridge) {
       pushActivity(isSaveKeyView ? 'Reloading registry' : 'Refreshing drive', isSaveKeyView ? 'Re-reading EEPROM page occupancy' : 'Reading directory table');
       try {
-        const { realDrives, realFiles, layouts, savekeyPages } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
+        const { realDrives, realFiles, layouts, savekeyPages, savekeyDevices } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
         setDrives(realDrives);
         setFiles(realFiles);
         setLiveDrives(layouts);
         setLiveSaveKeyPages(savekeyPages);
+        setLiveSaveKeyDevices(savekeyDevices);
         pushActivity(isSaveKeyView ? 'Registry reloaded' : 'Drive refreshed', isSaveKeyView ? `${activeTotalPages} pages re-read` : `${realFiles.filter((file) => file.driveId === activeDriveId).length} files indexed`);
       } catch (error) {
         pushActivity('Refresh failed', error instanceof Error ? error.message : String(error));
@@ -918,6 +1012,41 @@ function Home() {
                       {selectedAllocation.urls && selectedAllocation.urls.length > 0 && (
                         <div className="detail-links">
                           {selectedAllocation.urls.map((url) => <a key={url} href={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
+                        </div>
+                      )}
+                      {isRealSaveKeyDrive && (
+                        <div className="block-data">
+                          <div className="detail-row"><span>Block data</span><span>{selectedAllocationBytes ? `${selectedAllocationBytes.length} bytes` : 'Loading…'}</span></div>
+                          {selectedAllocationBytes && (
+                            <>
+                              <textarea
+                                className="block-hex-editor"
+                                value={allocationHexDraft}
+                                onChange={(event) => setAllocationHexDraft(event.target.value)}
+                                spellCheck={false}
+                                data-testid="textarea-block-hex"
+                              />
+                              {allocationWriteStatus === 'error' && <div className="warning-copy">{allocationWriteMessage}</div>}
+                              <div className="modal-actions">
+                                <button
+                                  className="action-button"
+                                  onClick={() => setAllocationHexDraft(bytesToHexString(selectedAllocationBytes))}
+                                  disabled={allocationWriteStatus === 'writing'}
+                                  data-testid="button-revert-block-hex"
+                                >
+                                  Revert
+                                </button>
+                                <button
+                                  className="action-button danger"
+                                  onClick={() => void writeAllocationBytes()}
+                                  disabled={allocationWriteStatus === 'writing'}
+                                  data-testid="button-write-block-hex"
+                                >
+                                  {allocationWriteStatus === 'writing' ? 'Writing…' : 'Write to device'}
+                                </button>
+                              </div>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>

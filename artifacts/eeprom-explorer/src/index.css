@@ -318,6 +318,8 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .allocation-detail .detail-notes { margin-top:11px; padding:8px 9px; background:rgba(255,176,0,.12); border-left:3px solid #ffb000; line-height:1.55; }
 .allocation-detail .detail-links { margin-top:11px; display:grid; gap:6px; }
 .allocation-detail .detail-links a { color:#1c4fae; text-decoration:underline; word-break:break-all; font-size:9px; }
+.block-data { margin-top:11px; }
+.block-hex-editor { width:100%; min-height:120px; margin-top:8px; padding:8px 9px; border:1px solid rgba(79,90,137,.35); border-radius:1px; background:#f8eac0; color:#20234d; font:10px/1.6 var(--app-font-mono); resize:vertical; }
 .activity-panel { border-radius:1px; overflow:hidden; }
 .activity-title { display:flex; align-items:center; gap:7px; padding:12px 15px; color:#20234d; border-bottom:2px solid #56619a; font-size:11px; text-transform:uppercase; }
 .activity-title svg { color:#d06c00; }
