@@ -747,7 +747,7 @@ function Home() {
           <div className="brand-mark" aria-hidden="true"><img src="/icons/icon-192.png" alt="" width={30} height={30} /></div>
           <div>
             <p className="brand-name">SaveKey-Manager</p>
-             <p className="brand-sub">i2c utility · rev 0.2</p>
+             <p className="brand-sub">i2c utility · rev 0.3</p>
           </div>
         </div>
          <p className="side-label">Manual index</p>
