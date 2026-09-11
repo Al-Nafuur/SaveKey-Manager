@@ -379,11 +379,16 @@ button.page-cell:hover { border-color:#2f3b7c; }
   .console-app { display:block; }
   .console-sidebar { position:relative; height:auto; padding:14px 16px; border-right:0; border-bottom:1px solid #111916; }
   .brand-lockup { padding-bottom:13px; }
-  .side-label, .drive-list, .side-footer { display:none; }
+  .side-label, .side-footer { display:none; }
   .nav-list { display:flex; gap:5px; }
   .nav-item { width:auto; padding:8px 10px; }
   .nav-item span { display:none; }
   .nav-item svg { margin:auto; }
+  /* Was `display:none` — that left no way to switch drives on a phone at
+     all (the drive cards are the only UI for it). Scroll them horizontally
+     instead of hiding them. */
+  .drive-list { display:flex; flex-direction:row; gap:10px; margin-top:14px; padding-bottom:2px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .drive-card { flex:0 0 auto; width:200px; }
   .topbar { padding:17px 16px; align-items:flex-start; }
   .topbar-title { font-size:19px; }
   .hardware-chip { display:none; }
