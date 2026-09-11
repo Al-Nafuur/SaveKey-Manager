@@ -31,7 +31,7 @@ import { usePicoBridge } from '@/hooks/use-pico-bridge';
 import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
 import { computeTinyElfLayout, formatDevice, readTinyElfHeader, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
-import { loadFileContent, saveFile } from '@/lib/tinyelf-save';
+import { loadFileContent, overwriteFileContent, saveFile } from '@/lib/tinyelf-save';
 import {
   buildPageOwners,
   fetchSaveKeyRegistry,
@@ -61,6 +61,9 @@ type TinyElfFile = {
   // Real (non-demo) files only: the sector-chain head, so content can be
   // lazily loaded on selection instead of eagerly for every listed file.
   startSector?: number;
+  // Real files only: directory slot index, needed to overwrite this file's
+  // content in place (see overwriteFileContent()) without touching its name.
+  slot?: number;
 };
 type ActivityRecord = { id: number; time: string; message: string; detail?: string };
 // Shared shape for both the demo allocation entries below and the real
@@ -202,6 +205,48 @@ function hex(value: number, length = 2) {
   return value.toString(16).toUpperCase().padStart(length, '0');
 }
 
+// Best-effort classic-BASIC keyword set for the .BAS syntax highlight in the
+// file editor — a generic list, not verified against TinyELF Basic's exact
+// dialect/grammar (revisit once that's pinned down).
+const BASIC_KEYWORDS = new Set([
+  'PRINT', 'REM', 'GOTO', 'GOSUB', 'RETURN', 'IF', 'THEN', 'ELSE', 'FOR', 'TO', 'STEP', 'NEXT', 'END', 'DIM', 'LET',
+  'INPUT', 'READ', 'DATA', 'RESTORE', 'POKE', 'PEEK', 'CLS', 'RUN', 'STOP', 'ON', 'CALL', 'NEW', 'LIST', 'SAVE',
+  'LOAD', 'AND', 'OR', 'NOT', 'CLEAR', 'COLOR', 'PLOT', 'DRAWTO', 'SOUND', 'GRAPHICS', 'POSITION', 'GET', 'PUT',
+  'OPEN', 'CLOSE', 'TRAP', 'LOCATE', 'DEG', 'RAD', 'DEF', 'FN',
+]);
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Operates on already-HTML-escaped text — everything the regex doesn't
+// match is passed through untouched by String.replace, so escaping has to
+// happen before this runs, not inside it, or literal `<`/`>` from BASIC's
+// own comparison operators would leak into the markup unescaped.
+function highlightBasicLine(escapedLine: string): string {
+  const TOKEN_RE = /(REM\b.*$)|("[^"]*")|(\b\d+(?:\.\d+)?\b)|(\b[A-Za-z_][A-Za-z0-9_$]*\b)/g;
+  return escapedLine.replace(TOKEN_RE, (match, remComment, stringLit, number, word) => {
+    if (remComment !== undefined) return `<span class="tok-comment">${remComment}</span>`;
+    if (stringLit !== undefined) return `<span class="tok-string">${stringLit}</span>`;
+    if (number !== undefined) return `<span class="tok-number">${number}</span>`;
+    if (word !== undefined && BASIC_KEYWORDS.has(word.toUpperCase())) return `<span class="tok-keyword">${word}</span>`;
+    return match;
+  });
+}
+
+function highlightBasic(text: string): string {
+  return text
+    .split('\n')
+    .map((rawLine) => {
+      const line = escapeHtml(rawLine);
+      const lineNumberMatch = line.match(/^(\s*\d+)(\s)/);
+      if (!lineNumberMatch) return highlightBasicLine(line);
+      const [, num, sep] = lineNumberMatch;
+      return `<span class="tok-linenum">${num}</span>${sep}${highlightBasicLine(line.slice(num.length + sep.length))}`;
+    })
+    .join('\n');
+}
+
 const HEX_BYTES_PER_ROW = 16;
 
 // Hex rows for an editable block-data view — 16 bytes per row, one row per
@@ -228,6 +273,29 @@ function parseHexString(text: string, expectedLength: number): number[] | null {
     bytes.push(parseInt(token, 16));
   }
   return bytes;
+}
+
+// Same, but for editing a file's content — unlike a fixed-size SaveKey page
+// range, a file can legitimately grow or shrink, so there's no fixed
+// expected length to check against; any whitespace-separated run of valid
+// byte pairs is accepted, however many.
+function parseHexBytes(text: string): number[] | null {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  const bytes: number[] = [];
+  for (const token of tokens) {
+    if (!/^[0-9a-fA-F]{1,2}$/.test(token)) return null;
+    bytes.push(parseInt(token, 16));
+  }
+  return bytes;
+}
+
+// Whether a file's bytes round-trip exactly through plain-ASCII text
+// (printable range + tab/LF/CR) — the same range the read-only preview used
+// to replace with "·". Editing as text is only offered when this holds,
+// since TextEncoder/TextDecoder aren't a lossless round trip for arbitrary
+// binary content (unlike hex, which always is).
+function isTextSafeBytes(bytes: number[]): boolean {
+  return bytes.every((byte) => byte === 0x09 || byte === 0x0a || byte === 0x0d || (byte >= 0x20 && byte <= 0x7e));
 }
 
 function nowTime() {
@@ -316,6 +384,18 @@ function Home() {
   const [allocationHexDraft, setAllocationHexDraft] = useState('');
   const [allocationWriteStatus, setAllocationWriteStatus] = useState<'idle' | 'writing' | 'error'>('idle');
   const [allocationWriteMessage, setAllocationWriteMessage] = useState('');
+  const [fileTextDraft, setFileTextDraft] = useState<string | null>(null);
+  const [fileHexDraft, setFileHexDraft] = useState('');
+  const [fileEditStatus, setFileEditStatus] = useState<'idle' | 'saving' | 'error'>('idle');
+  const [fileEditMessage, setFileEditMessage] = useState('');
+  const fileHexGutterRef = useRef<HTMLDivElement>(null);
+  // Set to a file's id while its real content is being fetched — guards the
+  // editor against Save wiping the file with an empty draft before the real
+  // bytes have actually arrived (a real file starts with bytes:[] the same
+  // way a genuinely empty file would look, so this can't be inferred from
+  // bytes.length alone).
+  const [loadingFileId, setLoadingFileId] = useState<string | null>(null);
+  const codeHighlightRef = useRef<HTMLPreElement>(null);
   const [saveKeyRegistry, setSaveKeyRegistry] = useState<SaveKeyRegistry | null>(null);
   const [saveKeyRegistryStatus, setSaveKeyRegistryStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
 
@@ -447,6 +527,7 @@ function Home() {
             driveId: id,
             bytes: [],
             startSector: entry.startSector,
+            slot: entry.slot,
           });
         }
       } else {
@@ -538,16 +619,19 @@ function Home() {
     if (!live) return;
 
     let cancelled = false;
+    const fileId = selectedFile.id;
+    setLoadingFileId(fileId);
     (async () => {
       try {
         const content = await loadFileContent(bridge, live.device, live.layout, startSector);
         if (cancelled) return;
-        const fileId = selectedFile.id;
         setFiles((items) =>
           items.map((item) => (item.id === fileId ? { ...item, bytes: Array.from(content), size: content.length } : item)),
         );
       } catch (error) {
         pushActivity('Load failed', error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!cancelled) setLoadingFileId((current) => (current === fileId ? null : current));
       }
     })();
 
@@ -555,6 +639,121 @@ function Home() {
       cancelled = true;
     };
   }, [selectedFile, liveDrives, picoBridge.bridge]);
+
+  // (Re)derives the editable text/hex drafts whenever the selected file (or
+  // its loaded content) changes — including right after a save, so the
+  // drafts end up matching whatever actually made it onto the device rather
+  // than what was typed.
+  useEffect(() => {
+    setFileEditStatus('idle');
+    setFileEditMessage('');
+    if (!selectedFile) {
+      setFileTextDraft(null);
+      setFileHexDraft('');
+      return;
+    }
+    setFileHexDraft(bytesToHexString(selectedFile.bytes));
+    setFileTextDraft(
+      isTextSafeBytes(selectedFile.bytes) ? new TextDecoder('ascii').decode(new Uint8Array(selectedFile.bytes)) : null,
+    );
+  }, [selectedFileId, selectedFile?.bytes]);
+
+  // Shared by both the text and hex Save actions below: writes new content
+  // for the currently selected file. Real, TinyELF-formatted drives get a
+  // true in-place overwrite (reallocates the sector chain, keeps the same
+  // directory slot); anything else (demo files, or a real drive that isn't
+  // recognized as TinyELF-formatted) only updates the local view — refusing
+  // outright would be unhelpfully strict for the app's own demo data, but a
+  // real *connected* non-TinyELF drive still needs the explicit refusal
+  // below so a local-only edit can't look like a real write.
+  const saveFileBytes = async (newBytes: number[]) => {
+    if (!selectedFile) return;
+    const live = liveDrives[selectedFile.driveId];
+
+    if (picoBridge.status === 'connected' && !live) {
+      setFileEditStatus('error');
+      setFileEditMessage('This device is not TinyELF-formatted — use Format first.');
+      return;
+    }
+
+    if (live && picoBridge.bridge) {
+      if (selectedFile.attributes === 'R/O') {
+        setFileEditStatus('error');
+        setFileEditMessage('This file is locked (R/O) — unlock it first.');
+        return;
+      }
+      if (selectedFile.startSector === undefined || selectedFile.slot === undefined) {
+        setFileEditStatus('error');
+        setFileEditMessage('Missing sector/slot info for this file — try reselecting it.');
+        return;
+      }
+      setFileEditStatus('saving');
+      setFileEditMessage('');
+      try {
+        const bridge = picoBridge.bridge;
+        const result = await overwriteFileContent(
+          bridge,
+          live.device,
+          live.layout,
+          { slot: selectedFile.slot, startSector: selectedFile.startSector },
+          new Uint8Array(newBytes),
+        );
+        const fileId = selectedFile.id;
+        setFiles((items) =>
+          items.map((item) =>
+            item.id === fileId ? { ...item, bytes: newBytes, size: newBytes.length, startSector: result.startSector } : item,
+          ),
+        );
+        pushActivity('File saved', `${selectedFile.name} · ${formatSize(newBytes.length)}`);
+      } catch (error) {
+        setFileEditStatus('error');
+        setFileEditMessage(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    // No real hardware for this drive — local-only update (demo files).
+    const fileId = selectedFile.id;
+    setFiles((items) => items.map((item) => (item.id === fileId ? { ...item, bytes: newBytes, size: newBytes.length } : item)));
+    pushActivity('File saved', `${selectedFile.name} · ${formatSize(newBytes.length)}`);
+  };
+
+  const revertFileTextDraft = () => {
+    if (!selectedFile) return;
+    setFileTextDraft(
+      isTextSafeBytes(selectedFile.bytes) ? new TextDecoder('ascii').decode(new Uint8Array(selectedFile.bytes)) : null,
+    );
+    setFileEditStatus('idle');
+    setFileEditMessage('');
+  };
+
+  const saveFileTextDraft = async () => {
+    if (fileTextDraft === null) return;
+    const encoded = Array.from(new TextEncoder().encode(fileTextDraft));
+    if (!isTextSafeBytes(encoded)) {
+      setFileEditStatus('error');
+      setFileEditMessage('Only plain ASCII text (plus tab/newline) can be saved this way — use Hex for anything else.');
+      return;
+    }
+    await saveFileBytes(encoded);
+  };
+
+  const revertFileHexDraft = () => {
+    if (!selectedFile) return;
+    setFileHexDraft(bytesToHexString(selectedFile.bytes));
+    setFileEditStatus('idle');
+    setFileEditMessage('');
+  };
+
+  const saveFileHexDraft = async () => {
+    const parsed = parseHexBytes(fileHexDraft);
+    if (!parsed) {
+      setFileEditStatus('error');
+      setFileEditMessage('Not valid hex — expected whitespace-separated byte pairs (00-FF).');
+      return;
+    }
+    await saveFileBytes(parsed);
+  };
 
   // Lazily loads a real allocation entry's actual page bytes the moment
   // it's selected in the classic SaveKey view, so they can be viewed and
@@ -767,8 +966,6 @@ function Home() {
   const selectedPreview = selectedFile?.bytes.length
     ? new TextDecoder().decode(new Uint8Array(selectedFile.bytes)).replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '·')
     : '';
-  const hexRows = selectedFile ? Array.from({ length: Math.ceil(selectedFile.bytes.length / 16) }, (_, row) => selectedFile.bytes.slice(row * 16, row * 16 + 16)) : [];
-
   const isDisconnected = picoBridge.status !== 'connected';
 
   // Rendered at one of two mount points (see allocationSelectionSource):
@@ -854,11 +1051,118 @@ function Home() {
   // Rendered inline under the clicked row (list view) or under the icon
   // grid (icon view) — there's no separate "map" mount point here since the
   // TinyELF file list has no page-map equivalent.
+  const fileIsLocked = selectedFile?.attributes === 'R/O';
+  const isBasicFile = selectedFile?.extension === 'BAS';
+  const fileContentLoading = selectedFile !== null && loadingFileId === selectedFile.id;
+
   const renderFileInspector = () => (
     <section className="preview-panel inline-inspector" data-testid="panel-file-inspector">
       <div className="preview-head"><h2>File inspector</h2><div className="preview-tabs"><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => setPreviewMode('preview')} data-testid="button-preview-mode">Preview</button><button className={previewMode === 'hex' ? 'active' : ''} onClick={() => setPreviewMode('hex')} data-testid="button-hex-mode">Hex</button></div></div>
       <div className="preview-body">
-        {!selectedFile ? <div className="preview-empty"><div><Hexagon size={25} /><br />Select a file to inspect its contents.</div></div> : previewMode === 'preview' ? <div className="preview-content"><div className="preview-file-title"><FileText size={15} />{selectedFile.name}<small>{formatSize(selectedFile.size)}</small></div>{selectedPreview || 'Binary data — switch to Hex for a byte-level view.'}</div> : <div className="hex-view"><div className="preview-file-title"><Hexagon size={15} />{selectedFile.name}<small>{selectedFile.bytes.length} bytes</small></div>{hexRows.map((row, index) => <div className="hex-row" key={index}><span className="hex-address">{hex(index * 16, 4)}</span><span className="hex-bytes">{row.map((byte) => hex(byte)).join(' ')}</span><span className="hex-ascii">{row.map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '·').join('')}</span></div>)}</div>}
+        {!selectedFile ? (
+          <div className="preview-empty"><div><Hexagon size={25} /><br />Select a file to inspect its contents.</div></div>
+        ) : previewMode === 'preview' ? (
+          <div className="preview-content">
+            <div className="preview-file-title">
+              <FileText size={15} />{selectedFile.name}<small>{formatSize(selectedFile.size)}</small>
+              {fileIsLocked && <small title="Locked — unlock before editing">R/O</small>}
+            </div>
+            {fileContentLoading ? (
+              'Loading…'
+            ) : fileTextDraft === null ? (
+              selectedPreview || 'Binary data — switch to Hex for a byte-level view.'
+            ) : isBasicFile ? (
+              <div className="code-editor-wrap">
+                <pre
+                  className="code-editor-highlight"
+                  ref={codeHighlightRef}
+                  aria-hidden="true"
+                  dangerouslySetInnerHTML={{ __html: `${highlightBasic(fileTextDraft)}\n` }}
+                />
+                <textarea
+                  className="code-editor-input"
+                  value={fileTextDraft}
+                  onChange={(event) => setFileTextDraft(event.target.value)}
+                  onScroll={(event) => {
+                    if (codeHighlightRef.current) {
+                      codeHighlightRef.current.scrollTop = event.currentTarget.scrollTop;
+                      codeHighlightRef.current.scrollLeft = event.currentTarget.scrollLeft;
+                    }
+                  }}
+                  disabled={fileIsLocked}
+                  spellCheck={false}
+                  wrap="off"
+                  data-testid="textarea-file-text"
+                />
+              </div>
+            ) : (
+              <textarea
+                className="code-editor-input code-editor-plain"
+                value={fileTextDraft}
+                onChange={(event) => setFileTextDraft(event.target.value)}
+                disabled={fileIsLocked}
+                spellCheck={false}
+                data-testid="textarea-file-text"
+              />
+            )}
+            {fileTextDraft !== null && !fileContentLoading && (
+              <>
+                {fileEditStatus === 'error' && <div className="warning-copy">{fileEditMessage}</div>}
+                <div className="modal-actions">
+                  <button className="action-button" onClick={revertFileTextDraft} disabled={fileEditStatus === 'saving'} data-testid="button-revert-file-text">
+                    Revert
+                  </button>
+                  <button className="action-button danger" onClick={() => void saveFileTextDraft()} disabled={fileEditStatus === 'saving' || fileIsLocked} data-testid="button-save-file-text">
+                    {fileEditStatus === 'saving' ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="hex-view">
+            <div className="preview-file-title">
+              <Hexagon size={15} />{selectedFile.name}<small>{selectedFile.bytes.length} bytes</small>
+              {fileIsLocked && <small title="Locked — unlock before editing">R/O</small>}
+            </div>
+            {fileContentLoading ? (
+              <p>Loading…</p>
+            ) : (
+              <>
+                <div className="hex-editor-wrap">
+                  <div className="hex-editor-gutter" ref={fileHexGutterRef}>
+                    {Array.from(
+                      { length: Math.max(1, Math.ceil(fileHexDraft.split('\n').length)) },
+                      (_, row) => <div key={row}>{hex(row * HEX_BYTES_PER_ROW, 4)}</div>,
+                    )}
+                  </div>
+                  <textarea
+                    className="block-hex-editor"
+                    value={fileHexDraft}
+                    onChange={(event) => setFileHexDraft(event.target.value)}
+                    onScroll={(event) => {
+                      if (fileHexGutterRef.current) fileHexGutterRef.current.scrollTop = event.currentTarget.scrollTop;
+                    }}
+                    disabled={fileIsLocked}
+                    rows={Math.max(4, fileHexDraft.split('\n').length)}
+                    spellCheck={false}
+                    wrap="off"
+                    data-testid="textarea-file-hex"
+                  />
+                </div>
+                {fileEditStatus === 'error' && <div className="warning-copy">{fileEditMessage}</div>}
+                <div className="modal-actions">
+                  <button className="action-button" onClick={revertFileHexDraft} disabled={fileEditStatus === 'saving'} data-testid="button-revert-file-hex">
+                    Revert
+                  </button>
+                  <button className="action-button danger" onClick={() => void saveFileHexDraft()} disabled={fileEditStatus === 'saving' || fileIsLocked} data-testid="button-save-file-hex">
+                    {fileEditStatus === 'saving' ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

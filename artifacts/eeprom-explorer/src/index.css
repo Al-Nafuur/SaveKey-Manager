@@ -342,6 +342,21 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .hex-editor-wrap { display:flex; margin-top:8px; border:1px solid rgba(79,90,137,.35); border-radius:1px; background:#f8eac0; overflow:hidden; }
 .hex-editor-gutter { flex:0 0 auto; padding:8px 6px 8px 9px; color:#8993be; background:rgba(83,96,142,.1); border-right:1px solid rgba(79,90,137,.25); font:13px/1.6 var(--app-font-mono); text-align:right; overflow:hidden; user-select:none; }
 .block-hex-editor { flex:1 1 auto; min-width:0; min-height:120px; padding:8px 9px; border:0; background:transparent; color:#20234d; font:13px/1.6 var(--app-font-mono); }
+
+/* File editor — plain textarea for non-BASIC text files, or (for .BAS) a
+   textarea with transparent text laid directly over a <pre> that renders
+   the same text with syntax-highlight spans, so the caret/selection is the
+   real textarea's while the colors come from the pre underneath. */
+.code-editor-wrap { position:relative; margin-top:8px; border:1px solid rgba(79,90,137,.35); border-radius:1px; background:#f8eac0; }
+.code-editor-highlight, .code-editor-input { margin:0; padding:8px 9px; border:0; width:100%; box-sizing:border-box; min-height:220px; font:13px/1.6 var(--app-font-mono); white-space:pre; overflow:auto; }
+.code-editor-highlight { position:absolute; inset:0; color:#20234d; pointer-events:none; }
+.code-editor-input { position:relative; background:transparent; color:transparent; caret-color:#20234d; resize:vertical; }
+.code-editor-input.code-editor-plain { position:static; color:#20234d; background:#f8eac0; border:1px solid rgba(79,90,137,.35); border-radius:1px; margin-top:8px; }
+.tok-linenum { color:#a15b00; }
+.tok-keyword { color:#1c4fae; font-weight:700; }
+.tok-string { color:#1c6a63; }
+.tok-number { color:#8a4b00; }
+.tok-comment { color:#756b56; font-style:italic; }
 .activity-panel { border-radius:1px; overflow:hidden; }
 .activity-title { display:flex; align-items:center; gap:7px; padding:12px 15px; color:#20234d; border-bottom:2px solid #56619a; font-size:11px; text-transform:uppercase; }
 .activity-title svg { color:#d06c00; }

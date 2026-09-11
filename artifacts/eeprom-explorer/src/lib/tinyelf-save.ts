@@ -15,7 +15,7 @@ import {
   writeSectors,
   type TinyElfLayout,
 } from './tinyelf-format';
-import { DIRECTORY_ENTRY_SIZE, DirEntryFlag, readDirectoryRaw } from './tinyelf-directory';
+import { DIRECTORY_ENTRY_SIZE, DirEntryFlag, readDirectoryRaw, type DirectoryEntry } from './tinyelf-directory';
 
 // All our supported capacities (4 KiB-256 KiB) land on exactly 1 VTOC
 // sector — see computeTinyElfLayout's vtocSectors math — so VTOC
@@ -32,6 +32,11 @@ function isSectorFree(vtoc: Uint8Array, sector: number): boolean {
 function markSectorAllocated(vtoc: Uint8Array, sector: number): void {
   const { byteIndex, bitMask } = vtocBitIndex(sector);
   vtoc[byteIndex] &= ~bitMask;
+}
+
+function markSectorFree(vtoc: Uint8Array, sector: number): void {
+  const { byteIndex, bitMask } = vtocBitIndex(sector);
+  vtoc[byteIndex] |= bitMask;
 }
 
 function findFreeSectors(vtoc: Uint8Array, layout: TinyElfLayout, count: number): number[] {
@@ -143,6 +148,84 @@ export async function saveFile(
   await writeSectors(bridge, device, layout.directoryStart + entrySectorIndex, patchedSector, layout.sectorSize);
 
   return { slot, fileNumber, startSector: sectors[0], sectorCount: sectors.length, name, extension };
+}
+
+export type OverwrittenFile = { startSector: number; sectorCount: number };
+
+// Overwrites an existing file's content in place: frees its old sector
+// chain, allocates a fresh one for the new content (findFreeSectors scans
+// from the start of the data region, so it commonly reuses some or all of
+// the just-freed sectors), and patches the SAME directory slot — name,
+// extension, and flags are left exactly as they were, only sector count and
+// start sector change. Keeps the wear-leveling contract: only the VTOC, the
+// one directory sector, and the sectors that are part of the new content
+// get written.
+export async function overwriteFileContent(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  layout: TinyElfLayout,
+  entry: Pick<DirectoryEntry, 'slot' | 'startSector'>,
+  data: Uint8Array,
+): Promise<OverwrittenFile> {
+  const dataBytesPerSector = layout.sectorSize - SECTOR_CONTROL_BYTES;
+  const sectorsNeeded = Math.max(1, Math.ceil(data.length / dataBytesPerSector));
+
+  // Walk the existing chain to find which sectors to free.
+  const oldSectors: number[] = [];
+  {
+    let sector = entry.startSector;
+    const visited = new Set<number>();
+    while (sector !== SECTOR_LINK_NONE) {
+      if (visited.has(sector)) throw new Error(`Sector chain loop detected at sector ${sector}.`);
+      visited.add(sector);
+      oldSectors.push(sector);
+      const control = await readDeviceBytes(bridge, device, sector * layout.sectorSize + dataBytesPerSector, SECTOR_CONTROL_BYTES);
+      sector = decodeSectorControl(control[0], control[1], control[2]).nextSector;
+    }
+  }
+
+  const vtoc = await readDeviceBytes(bridge, device, layout.vtocStart * layout.sectorSize, layout.sectorSize);
+  for (const sector of oldSectors) markSectorFree(vtoc, sector);
+  const sectors = findFreeSectors(vtoc, layout, sectorsNeeded);
+
+  for (let i = 0; i < sectors.length; i++) {
+    const sector = sectors[i];
+    const isLast = i === sectors.length - 1;
+    const chunkStart = i * dataBytesPerSector;
+    const chunkEnd = Math.min(data.length, chunkStart + dataBytesPerSector);
+    const bytesUsed = chunkEnd - chunkStart;
+    const nextSector = isLast ? SECTOR_LINK_NONE : sectors[i + 1];
+
+    const sectorBytes = new Uint8Array(layout.sectorSize);
+    sectorBytes.set(data.subarray(chunkStart, chunkEnd), 0);
+    const control = encodeSectorControl(bytesUsed, entry.slot, nextSector);
+    sectorBytes.set(control, dataBytesPerSector);
+
+    const { addr, memAddr } = resolveDeviceAddress(device, sector * layout.sectorSize);
+    await bridge.write(addr, memAddr, sectorBytes);
+    markSectorAllocated(vtoc, sector);
+  }
+
+  // VTOC: always exactly 1 sector — rewrite it whole.
+  await writeSectors(bridge, device, layout.vtocStart, vtoc, layout.sectorSize);
+
+  // Directory: patch only sector-count + start-sector for this slot.
+  const entriesPerSector = Math.floor(layout.sectorSize / DIRECTORY_ENTRY_SIZE);
+  const entrySectorIndex = Math.floor(entry.slot / entriesPerSector);
+  const entryOffsetInSector = (entry.slot % entriesPerSector) * DIRECTORY_ENTRY_SIZE;
+  const directoryBytes = await readDirectoryRaw(bridge, device, layout);
+  const directorySectorStart = entrySectorIndex * layout.sectorSize;
+  const patchedSector = new Uint8Array(
+    directoryBytes.subarray(directorySectorStart, directorySectorStart + layout.sectorSize),
+  );
+  patchedSector[entryOffsetInSector + 1] = sectors.length & 0xff;
+  patchedSector[entryOffsetInSector + 2] = (sectors.length >> 8) & 0xff;
+  patchedSector[entryOffsetInSector + 3] = sectors[0] & 0xff;
+  patchedSector[entryOffsetInSector + 4] = (sectors[0] >> 8) & 0xff;
+
+  await writeSectors(bridge, device, layout.directoryStart + entrySectorIndex, patchedSector, layout.sectorSize);
+
+  return { startSector: sectors[0], sectorCount: sectors.length };
 }
 
 // Cheaper counterpart to loadFileContent() for when only the exact byte

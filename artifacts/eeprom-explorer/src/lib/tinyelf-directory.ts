@@ -31,6 +31,10 @@ export const DirEntryFlag = {
 } as const;
 
 export type DirectoryEntry = {
+  // Directory slot index (= file number, per the classic DOS 2.x convention
+  // this format reuses) — needed to patch the right entry back in place when
+  // overwriting a file's content in situ (see overwriteFileContent()).
+  slot: number;
   flags: number;
   sectorCount: number;
   startSector: number;
@@ -54,7 +58,15 @@ export function parseDirectoryEntry(buf: Uint8Array, offset: number): DirectoryE
   const name = new TextDecoder('ascii').decode(buf.subarray(offset + 5, offset + 13)).trimEnd();
   const extension = new TextDecoder('ascii').decode(buf.subarray(offset + 13, offset + 16)).trimEnd();
 
-  return { flags, sectorCount, startSector, name, extension, locked: (flags & DirEntryFlag.LOCKED) !== 0 };
+  return {
+    slot: offset / DIRECTORY_ENTRY_SIZE,
+    flags,
+    sectorCount,
+    startSector,
+    name,
+    extension,
+    locked: (flags & DirEntryFlag.LOCKED) !== 0,
+  };
 }
 
 export function parseDirectorySectors(buf: Uint8Array): DirectoryEntry[] {
