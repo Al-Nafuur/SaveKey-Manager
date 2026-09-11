@@ -952,9 +952,9 @@ function Home() {
                 <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="" width={120} height={120} />
                 <h2>SaveKey-Manager</h2>
                 <p>
-                  A browser-based manager for the SaveKey Plus, an EEPROM save-game cartridge for the Atari 2600 and
-                  other 8-bit homebrew platforms. Connect a Pico bridge to browse and edit the classic SaveKey
-                  allocation registry or the TinyELF Basic filesystem on real hardware.
+                  A browser-based manager for the SaveKey and SaveKey Plus, EEPROM save-game cartridges for the
+                  Atari 2600 and 7800. Connect a Pico bridge to browse and edit the classic SaveKey allocation
+                  registry or the DOS 2.x-like TinyELF Basic filesystem on real hardware.
                 </p>
                 <div className="welcome-actions">
                   <button className="action-button primary" onClick={() => void picoBridge.connect()} disabled={!picoBridge.isSupported} data-testid="button-connect-welcome">
