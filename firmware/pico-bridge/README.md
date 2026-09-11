@@ -10,6 +10,10 @@ Not part of the pnpm workspace — this is a plain Pico SDK / CMake project (C),
 
 I2C0 on the Pico's physical header pins 6/7, which are GPIO4 (SDA) and GPIO5 (SCL) — not GPIO6/GPIO7 (physical pin number ≠ GPIO number; that mix-up cost a long debugging session). Plus 3.3V and GND to the SaveKey Plus. See [src/i2c_bus.h](src/i2c_bus.h) if these ever change.
 
+![Breadboard wiring](breadboard.png)
+
+Full interactive schematic/breadboard view: [Cirkit Designer project](https://app.cirkitdesigner.com/project/4d5ff67b-dfd0-4421-9f80-2ef89a3df386).
+
 ## Status
 
 - [x] I²C driver: init, probe, write, read ([src/i2c_bus.c](src/i2c_bus.c))
