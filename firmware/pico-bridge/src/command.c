@@ -129,7 +129,7 @@ static void handle_write(const char *args) {
 
 static void handle_command(const char *line) {
     if (strcmp(line, "PING") == 0) {
-        printf("OK pico-bridge\n");
+        printf("OK PicoBridge\n");
     } else if (strcmp(line, "SCAN") == 0) {
         handle_scan();
     } else if (strncmp(line, "READ ", 5) == 0) {
@@ -142,7 +142,7 @@ static void handle_command(const char *line) {
 }
 
 void command_run_loop(void) {
-    printf("pico-bridge ready\n");
+    printf("PicoBridge ready\n");
     char line[LINE_BUF_SIZE];
     while (true) {
         read_line(line, sizeof(line));

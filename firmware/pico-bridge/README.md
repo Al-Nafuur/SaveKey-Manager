@@ -1,6 +1,6 @@
-# pico-bridge
+# PicoBridge
 
-Firmware for the Raspberry Pi Pico (RP2040) that sits between the SaveKey Plus and the host running SaveKey-Manager.
+Firmware for the Raspberry Pi Pico (RP2040) that sits between the SaveKey/SaveKey Plus and the host running SaveKey-Manager.
 
 Acts purely as a USB ↔ I²C bridge: it executes block-level read/write commands sent by the app and talks I²C to the SaveKey's EEPROM(s). It has no knowledge of the SaveKey allocation-list format or the TinyELF Basic filesystem — all layout/format logic lives in [artifacts/eeprom-explorer](../../artifacts/eeprom-explorer).
 
@@ -24,7 +24,7 @@ Full interactive schematic/breadboard view: [Cirkit Designer project](https://ap
 
 Text command lines (newline-terminated) over the USB CDC port; binary payload bytes for READ/WRITE data (no encoding overhead, and payload contents aren't meant to be eyeballed anyway — only the command/response lines are).
 
-- `PING` → `OK pico-bridge`
+- `PING` → `OK PicoBridge`
 - `SCAN` → zero or more `ACK <addr_hex2>` lines (only for addresses that ACK), then `OK`
 - `READ <addr_hex2> <memaddr_hex4> <len_dec>` → `OK <len_dec>` immediately followed by exactly `len` raw bytes, or `ERR <reason>` (no data) if the request itself is invalid. `len` is only bounded by the 16-bit address space (up to 65536 bytes in one call) — reads aren't page-limited. A mid-stream I2C failure (rare, only possible once the address has already ACKed) pads the remainder with zero bytes rather than aborting, since the byte count was already committed via the `OK` header.
 - `WRITE <addr_hex2> <memaddr_hex4> <len_dec>` then exactly `len` raw bytes from the host → `OK` or `ERR <reason>`. `len` is capped to `I2C_BUS_MAX_PAYLOAD` (256 bytes, one EEPROM page) — a multi-page write is several WRITE commands, one per page; the host is responsible for that chunking (this firmware deliberately doesn't do multi-page writes itself). `OK` is a genuine "safe to proceed" guarantee: the firmware polls the address (ACK-polling, capped at `WRITE_CYCLE_POLL_TIMEOUT_MS` = 20ms) until the EEPROM acknowledges again before responding, so the host never has to know or guess about the chip's internal write-cycle time. Confirmed on real hardware: an immediate READ right after a WRITE, with no host-side delay, correctly returns the just-written bytes — without the polling, the same test read back all zeros (the EEPROM was still mid-write-cycle and NACKed).

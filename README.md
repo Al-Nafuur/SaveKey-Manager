@@ -12,13 +12,13 @@ The SaveKey Plus has **two EEPROMs**, and this app understands both of the files
 - **Classic SaveKey / AtariVox format** (32 KiB) — the format used by the existing SaveKey/AtariVox community tools. The app fetches the live [savekey-allocation-list](https://github.com/atariage-community/savekey-allocation-list) registry on start, shows which pages are actually occupied on the real hardware (not just what the registry claims), and lets you view/edit raw page data in a hex editor.
 - **TinyELF Basic filesystem** (up to 256 KiB, on the second EEPROM) — a custom, DOS 2.x-like filesystem (directory, VTOC, sector chaining) for the TinyELF Basic dialect. Supports FORMAT, SAVE, LOAD and DELETE, and is careful to only ever rewrite the sectors that actually changed (VTOC/directory/boot block) — never a blanket rewrite — for EEPROM wear-leveling.
 
-A **Raspberry Pi Pico** acts as a dumb USB↔I²C bridge between the browser and the SaveKey/SaveKey Plus; all filesystem/layout logic lives in the app itself, not the firmware. See [firmware/pico-bridge](firmware/pico-bridge) for the bridge and its wiring.
+**PicoBridge** — a Raspberry Pi Pico running dumb USB↔I²C bridge firmware — connects the browser to the SaveKey/SaveKey Plus; all filesystem/layout logic lives in the app itself, not the firmware. See [firmware/pico-bridge](firmware/pico-bridge) for PicoBridge and its wiring.
 
 ## Repo layout
 
 ```
 artifacts/eeprom-explorer/   the PWA itself (React 19 + Vite 7 + Tailwind 4)
-firmware/pico-bridge/        Pico (RP2040) bridge firmware — plain Pico SDK/CMake, not part of the pnpm workspace
+firmware/pico-bridge/        PicoBridge firmware (RP2040) — plain Pico SDK/CMake, not part of the pnpm workspace
 ```
 
 ## Development

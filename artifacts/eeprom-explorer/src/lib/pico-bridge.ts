@@ -1,4 +1,4 @@
-// Talks to the pico-bridge firmware (firmware/pico-bridge) over Web Serial
+// Talks to the PicoBridge firmware (firmware/pico-bridge) over Web Serial
 // using its text-command protocol (see that project's README): PING, SCAN,
 // READ <addr> <memaddr> <len>, WRITE <addr> <memaddr> <len> + raw bytes.
 
@@ -64,13 +64,13 @@ class ByteStreamReader {
         const text = new TextDecoder().decode(lineBytes);
         return text.endsWith('\r') ? text.slice(0, -1) : text;
       }
-      if (!(await this.fill())) throw new Error('Pico bridge: port closed while waiting for a response.');
+      if (!(await this.fill())) throw new Error('PicoBridge: port closed while waiting for a response.');
     }
   }
 
   async readExact(count: number): Promise<Uint8Array> {
     while (this.buffer.length < count) {
-      if (!(await this.fill())) throw new Error('Pico bridge: port closed while waiting for data.');
+      if (!(await this.fill())) throw new Error('PicoBridge: port closed while waiting for data.');
     }
     const result = this.buffer.slice(0, count);
     this.buffer = this.buffer.slice(count);
@@ -126,8 +126,8 @@ export class PicoBridge {
 
   private async expectOk(): Promise<string> {
     const line = await this.streamReader.readLine();
-    if (line.startsWith('ERR')) throw new Error(`Pico bridge: ${line}`);
-    if (!line.startsWith('OK')) throw new Error(`Pico bridge: unexpected response "${line}"`);
+    if (line.startsWith('ERR')) throw new Error(`PicoBridge: ${line}`);
+    if (!line.startsWith('OK')) throw new Error(`PicoBridge: unexpected response "${line}"`);
     return line;
   }
 
@@ -149,8 +149,8 @@ export class PicoBridge {
           continue;
         }
         if (line.startsWith('OK')) break;
-        if (line.startsWith('ERR')) throw new Error(`Pico bridge: ${line}`);
-        throw new Error(`Pico bridge: unexpected response "${line}"`);
+        if (line.startsWith('ERR')) throw new Error(`PicoBridge: ${line}`);
+        throw new Error(`PicoBridge: unexpected response "${line}"`);
       }
       return groupContiguousAddresses(acked);
     });
@@ -161,7 +161,7 @@ export class PicoBridge {
       await this.sendLine(`READ ${toHex(addr, 2)} ${toHex(memAddr, 4)} ${len}`);
       const header = await this.expectOk();
       const declaredLen = Number(header.split(' ')[1]);
-      if (!Number.isFinite(declaredLen)) throw new Error(`Pico bridge: bad READ response "${header}"`);
+      if (!Number.isFinite(declaredLen)) throw new Error(`PicoBridge: bad READ response "${header}"`);
       return this.streamReader.readExact(declaredLen);
     });
   }

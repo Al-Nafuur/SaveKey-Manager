@@ -953,12 +953,12 @@ function Home() {
                 <h2>SaveKey-Manager</h2>
                 <p>
                   A browser-based manager for the SaveKey and SaveKey Plus, EEPROM save-game cartridges for the
-                  Atari 2600 and 7800. Connect a Pico bridge to browse and edit the classic SaveKey allocation
+                  Atari 2600 and 7800. Connect a PicoBridge to browse and edit the classic SaveKey allocation
                   registry or the DOS 2.x-like TinyELF Basic filesystem on real hardware.
                 </p>
                 <div className="welcome-actions">
                   <button className="action-button primary" onClick={() => void picoBridge.connect()} disabled={!picoBridge.isSupported} data-testid="button-connect-welcome">
-                    <Network size={14} /><span>Connect to Pico bridge</span>
+                    <Network size={14} /><span>Connect to PicoBridge</span>
                   </button>
                   <a className="action-button" href={PROJECT_REPO_URL} target="_blank" rel="noopener noreferrer" data-testid="link-project-docs">
                     <ExternalLink size={14} /><span>View documentation</span>
@@ -1077,7 +1077,7 @@ function Home() {
           <aside className="right-rail">
             <section className="hardware-panel" data-testid="panel-pico-bridge">
               <div className="hardware-heading">
-                <div><h2>Live hardware</h2><p>Pico bridge (walking skeleton)</p></div>
+                <div><h2>Live hardware</h2><p>PicoBridge (walking skeleton)</p></div>
                 {picoBridge.status === 'connected' && <span className="connected-badge"><i /> connected</span>}
               </div>
               <div className="hardware-list">
@@ -1121,7 +1121,7 @@ function Home() {
                       <p className="protect-line">{picoBridge.errorMessage}</p>
                     )}
                     <button className="action-button" onClick={() => void picoBridge.connect()} data-testid="button-connect-pico">
-                      <Network size={14} /><span>Connect to Pico bridge</span>
+                      <Network size={14} /><span>Connect to PicoBridge</span>
                     </button>
                   </>
                 )}
@@ -1237,7 +1237,7 @@ function Home() {
                       ))}
                     </select>
                   </label>
-                  <div className="format-summary" title="Computed from the chosen capacity — see firmware/pico-bridge README / tinyelf-format.ts for the exact layout rules">
+                  <div className="format-summary" title="Computed from the chosen capacity — see the PicoBridge firmware README / tinyelf-format.ts for the exact layout rules">
                     <div className="format-summary-line"><span>Sector size</span><strong>{formatLayout.sectorSize} B</strong></div>
                     <div className="format-summary-line"><span>Total sectors</span><strong>{formatLayout.totalSectors}</strong></div>
                     <div className="format-summary-line"><span>VTOC</span><strong>sector {formatLayout.vtocStart}, {formatLayout.vtocSectors} sector{formatLayout.vtocSectors === 1 ? '' : 's'}</strong></div>
