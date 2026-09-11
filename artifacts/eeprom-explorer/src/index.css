@@ -350,7 +350,10 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .code-editor-wrap { position:relative; margin-top:8px; border:1px solid rgba(79,90,137,.35); border-radius:1px; background:#f8eac0; }
 .code-editor-highlight, .code-editor-input { margin:0; padding:8px 9px; border:0; width:100%; box-sizing:border-box; min-height:220px; font:13px/1.6 var(--app-font-mono); white-space:pre; overflow:auto; }
 .code-editor-highlight { position:absolute; inset:0; color:#20234d; pointer-events:none; }
-.code-editor-input { position:relative; background:transparent; color:transparent; caret-color:#20234d; resize:vertical; }
+/* No resize handle: with outline-offset, some browsers don't account for
+   the native resizer grip in the focus outline's bottom-edge geometry,
+   making it render flush there instead of offset like the other 3 sides. */
+.code-editor-input { position:relative; background:transparent; color:transparent; caret-color:#20234d; resize:none; }
 .code-editor-input.code-editor-plain { position:static; color:#20234d; background:#f8eac0; border:1px solid rgba(79,90,137,.35); border-radius:1px; margin-top:8px; }
 .tok-linenum { color:#a15b00; }
 .tok-keyword { color:#1c4fae; font-weight:700; }
