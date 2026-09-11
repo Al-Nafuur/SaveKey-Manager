@@ -347,14 +347,26 @@ button.page-cell:hover { border-color:#2f3b7c; }
    textarea with transparent text laid directly over a <pre> that renders
    the same text with syntax-highlight spans, so the caret/selection is the
    real textarea's while the colors come from the pre underneath. */
-.code-editor-wrap { position:relative; margin-top:8px; border:1px solid rgba(79,90,137,.35); border-radius:1px; background:#f8eac0; }
-.code-editor-highlight, .code-editor-input { margin:0; padding:8px 9px; border:0; width:100%; box-sizing:border-box; min-height:220px; font:13px/1.6 var(--app-font-mono); white-space:pre; overflow:auto; }
+/* Fixed, explicit height on the wrap (not min-height on the children) —
+   the highlight <pre> is absolutely positioned with inset:0, so if the wrap
+   were left at auto height, the pre's own height can't be solved from that
+   (circular: the child's inset:0 needs a definite parent height, the
+   parent's auto height only comes from its in-flow child, the textarea) and
+   browsers fall back to sizing the pre by its own content instead — which
+   isn't the same height as the textarea (e.g. the trailing "\n" appended to
+   the highlighted HTML below), so the two silently drift apart (observed:
+   textarea 220px, pre 226px) and the textarea's focus outline ends up
+   looking clipped against the taller, visually-overflowing pre underneath.
+   A definite height on the wrap, with height:100% on both children instead
+   of min-height, removes the ambiguity entirely — they can only ever match. */
+.code-editor-wrap { position:relative; margin-top:8px; height:220px; border:1px solid rgba(79,90,137,.35); border-radius:1px; background:#f8eac0; }
+.code-editor-highlight, .code-editor-input { margin:0; padding:8px 9px; border:0; width:100%; height:100%; box-sizing:border-box; font:13px/1.6 var(--app-font-mono); white-space:pre; overflow:auto; }
 .code-editor-highlight { position:absolute; inset:0; color:#20234d; pointer-events:none; }
-/* No resize handle: with outline-offset, some browsers don't account for
-   the native resizer grip in the focus outline's bottom-edge geometry,
-   making it render flush there instead of offset like the other 3 sides. */
+/* No resize handle: the wrap's height is now fixed (see above) so the
+   textarea and pre stay pixel-matched — a user resize would only stretch
+   the textarea past the wrap's fixed box, not the pre underneath it. */
 .code-editor-input { position:relative; background:transparent; color:transparent; caret-color:#20234d; resize:none; }
-.code-editor-input.code-editor-plain { position:static; color:#20234d; background:#f8eac0; border:1px solid rgba(79,90,137,.35); border-radius:1px; margin-top:8px; }
+.code-editor-input.code-editor-plain { position:static; height:220px; color:#20234d; background:#f8eac0; border:1px solid rgba(79,90,137,.35); border-radius:1px; margin-top:8px; }
 .tok-linenum { color:#a15b00; }
 .tok-keyword { color:#1c4fae; font-weight:700; }
 .tok-string { color:#1c6a63; }
