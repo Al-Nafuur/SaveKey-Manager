@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import {
@@ -38,7 +38,7 @@ import {
   type SaveKeyAllocationEntry,
   type SaveKeyRegistry,
 } from '@/lib/savekey-registry';
-import { readPageOccupancy, readPageRange, writePageRange } from '@/lib/savekey-pages';
+import { formatSaveKeyDevice, readPageOccupancy, readPageRange, writePageRange, type SaveKeyTvMode } from '@/lib/savekey-pages';
 
 type DriveMode = 'savekey' | 'tinyelf-fs';
 type Drive = {
@@ -74,6 +74,7 @@ const SCRATCHPAD_START = 0x0c0;
 const SCRATCHPAD_END = 0x0ff;
 const TOTAL_PAGES = 512;
 const ALLOCATION_LIST_URL = 'https://github.com/atariage-community/savekey-allocation-list';
+const PROJECT_REPO_URL = 'https://github.com/Al-Nafuur/SaveKey-Manager';
 
 // Standard EEPROM capacities from the TinyELF FS design notes. SCAN can only
 // tell us "N I2C addresses ACKed", which for a single address (<=64 KiB) is
@@ -201,9 +202,9 @@ function hex(value: number, length = 2) {
   return value.toString(16).toUpperCase().padStart(length, '0');
 }
 
-const HEX_BYTES_PER_ROW = 8;
+const HEX_BYTES_PER_ROW = 16;
 
-// Hex rows for an editable block-data view — 8 bytes per row, one row per
+// Hex rows for an editable block-data view — 16 bytes per row, one row per
 // textarea line. The address gutter is a separate, synced-scroll element
 // (see the "hex-editor-gutter" div below), not part of this text, so the
 // editable value is pure hex bytes with nothing to strip back out.
@@ -289,6 +290,10 @@ function Home() {
   const [files, setFiles] = useState(initialTinyElfFiles);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [selectedAllocationId, setSelectedAllocationId] = useState<string | null>('duck-attack');
+  // Where the current allocation selection came from — determines whether the
+  // inspector opens right under the page map or inline under the clicked
+  // registry row, so it's never far from what you just clicked.
+  const [allocationSelectionSource, setAllocationSelectionSource] = useState<'map' | 'list'>('map');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'icons'>('list');
   const [previewMode, setPreviewMode] = useState<'preview' | 'hex'>('preview');
@@ -299,7 +304,9 @@ function Home() {
   const hexGutterRef = useRef<HTMLDivElement>(null);
   const picoBridge = usePicoBridge();
   const [formatTarget, setFormatTarget] = useState<DetectedDevice | null>(null);
+  const [formatFilesystem, setFormatFilesystem] = useState<'tinyelf' | 'savekey'>('tinyelf');
   const [formatCapacityKiB, setFormatCapacityKiB] = useState(32);
+  const [formatTvMode, setFormatTvMode] = useState<SaveKeyTvMode>('ntsc60');
   const [formatStatus, setFormatStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [formatMessage, setFormatMessage] = useState('');
   const [liveDrives, setLiveDrives] = useState<Record<string, { device: DetectedDevice; layout: TinyElfLayout }>>({});
@@ -355,8 +362,13 @@ function Home() {
   };
 
   const openFormatDialog = (device: DetectedDevice) => {
+    const guessedCapacity = guessCapacityKiB(device);
     setFormatTarget(device);
-    setFormatCapacityKiB(guessCapacityKiB(device));
+    setFormatCapacityKiB(guessedCapacity);
+    // A single-address, 32 KiB-guessed device is most likely a plain
+    // SaveKey/AtariVox EEPROM — default to that format, TinyELF otherwise.
+    setFormatFilesystem(device.addressCount === 1 && guessedCapacity === 32 ? 'savekey' : 'tinyelf');
+    setFormatTvMode('ntsc60');
     setFormatStatus('idle');
     setFormatMessage('');
   };
@@ -371,9 +383,16 @@ function Home() {
     if (!formatTarget || !bridge) return;
     setFormatStatus('running');
     try {
-      await formatDevice(bridge, formatTarget, formatCapacityKiB * 1024, setFormatMessage);
-      setFormatStatus('done');
-      pushActivity('Device formatted', `${hex(formatTarget.startAddress)} · ${formatCapacityKiB} KiB`);
+      if (formatFilesystem === 'savekey') {
+        const pageSize = saveKeyRegistry?.pageSize ?? 64;
+        await formatSaveKeyDevice(bridge, formatTarget, pageSize, formatTvMode, setFormatMessage);
+        setFormatStatus('done');
+        pushActivity('Device formatted', `${hex(formatTarget.startAddress)} · SaveKey system block`);
+      } else {
+        await formatDevice(bridge, formatTarget, formatCapacityKiB * 1024, setFormatMessage);
+        setFormatStatus('done');
+        pushActivity('Device formatted', `${hex(formatTarget.startAddress)} · ${formatCapacityKiB} KiB`);
+      }
       await picoBridge.rescan();
     } catch (error) {
       setFormatStatus('error');
@@ -602,6 +621,7 @@ function Home() {
     setActiveDriveId(driveId);
     setSelectedFileId(null);
     setSelectedAllocationId(null);
+    setAllocationSelectionSource('map');
     setQuery('');
     const drive = drives.find((item) => item.id === driveId);
     pushActivity('Drive selected', drive ? `${drive.label} at ${hex(drive.address)}` : driveId);
@@ -611,6 +631,7 @@ function Home() {
     setDrives((items) => items.map((item) => (item.id === driveId ? { ...item, mode } : item)));
     setSelectedFileId(null);
     setSelectedAllocationId(mode === 'savekey' ? 'duck-attack' : null);
+    setAllocationSelectionSource('map');
     const drive = drives.find((item) => item.id === driveId);
     pushActivity('Format changed', `${drive?.label ?? driveId} → ${mode === 'savekey' ? 'SaveKey allocation list' : 'TinyELF Basic filesystem'}`);
   };
@@ -723,7 +744,15 @@ function Home() {
 
   const selectPage = (page: number) => {
     const owners = activePageOwners[page];
-    if (owners && owners.length > 0) setSelectedAllocationId(owners[0].id);
+    if (owners && owners.length > 0) {
+      setSelectedAllocationId(owners[0].id);
+      setAllocationSelectionSource('map');
+    }
+  };
+
+  const selectAllocationRow = (id: string) => {
+    setSelectedAllocationId(id);
+    setAllocationSelectionSource('list');
   };
 
   // An entry can span several pages — "has data" for the whole entry means
@@ -738,7 +767,101 @@ function Home() {
   const selectedPreview = selectedFile?.bytes.length
     ? new TextDecoder().decode(new Uint8Array(selectedFile.bytes)).replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '·')
     : '';
-  const hexRows = selectedFile ? Array.from({ length: Math.min(8, Math.ceil(selectedFile.bytes.length / 16)) }, (_, row) => selectedFile.bytes.slice(row * 16, row * 16 + 16)) : [];
+  const hexRows = selectedFile ? Array.from({ length: Math.ceil(selectedFile.bytes.length / 16) }, (_, row) => selectedFile.bytes.slice(row * 16, row * 16 + 16)) : [];
+
+  const isDisconnected = picoBridge.status !== 'connected';
+
+  // Rendered at one of two mount points (see allocationSelectionSource):
+  // right under the page map for a map click, or inline under the clicked
+  // row for a list click — never both at once, so there's only ever one
+  // live hex-editor draft for the current selection.
+  const renderAllocationInspector = () => (
+    <section className="preview-panel inline-inspector" data-testid="panel-allocation-inspector">
+      <div className="preview-head"><h2>Allocation inspector</h2></div>
+      <div className="preview-body">
+        {!selectedAllocation ? (
+          <div className="preview-empty"><div><Hexagon size={25} /><br />Select a page or registry entry to inspect it.</div></div>
+        ) : (
+          <div className="allocation-detail">
+            <div className="preview-file-title"><LayoutGrid size={15} />{selectedAllocation.title}<small className={`status-${selectedAllocation.status}`}>{selectedAllocation.status}</small></div>
+            <div className={`detail-row detail-data-row ${entryHasAnyData(selectedAllocation) ? 'has-data' : 'no-data'}`}><span>On this device</span><span>{entryHasAnyData(selectedAllocation) ? 'Save data present' : 'No data — slot reserved only'}</span></div>
+            <div className="detail-row"><span>Kind</span><span>{selectedAllocation.kind}</span></div>
+            {selectedAllocation.developer && <div className="detail-row"><span>Developer</span><span>{selectedAllocation.developer}</span></div>}
+            {selectedAllocation.platform && <div className="detail-row"><span>Platform</span><span>{selectedAllocation.platform}</span></div>}
+            <div className="detail-row"><span>Pages</span><span>{hex(selectedAllocation.pageStart, 3)}–{hex(selectedAllocation.pageEnd, 3)}</span></div>
+            <div className="detail-row"><span>Byte range</span><span>{hex(selectedAllocation.pageStart * 64, 4)}–{hex(selectedAllocation.pageEnd * 64 + 63, 4)}</span></div>
+            {selectedAllocation.verified && <div className="detail-row"><span>Verified</span><span>{selectedAllocation.verified}</span></div>}
+            {selectedAllocation.notes && <div className="detail-notes">{selectedAllocation.notes}</div>}
+            {selectedAllocation.urls && selectedAllocation.urls.length > 0 && (
+              <div className="detail-links">
+                {selectedAllocation.urls.map((url) => <a key={url} href={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
+              </div>
+            )}
+            {isRealSaveKeyDrive && (
+              <div className="block-data">
+                <div className="detail-row"><span>Block data</span><span>{selectedAllocationBytes ? `${selectedAllocationBytes.length} bytes` : 'Loading…'}</span></div>
+                {selectedAllocationBytes && (
+                  <>
+                    <div className="hex-editor-wrap">
+                      <div className="hex-editor-gutter" ref={hexGutterRef}>
+                        {Array.from(
+                          { length: Math.max(1, Math.ceil(selectedAllocationBytes.length / HEX_BYTES_PER_ROW)) },
+                          (_, row) => <div key={row}>{hex(row * HEX_BYTES_PER_ROW, 4)}</div>,
+                        )}
+                      </div>
+                      <textarea
+                        className="block-hex-editor"
+                        value={allocationHexDraft}
+                        onChange={(event) => setAllocationHexDraft(event.target.value)}
+                        onScroll={(event) => {
+                          if (hexGutterRef.current) hexGutterRef.current.scrollTop = event.currentTarget.scrollTop;
+                        }}
+                        rows={Math.max(4, Math.ceil(selectedAllocationBytes.length / HEX_BYTES_PER_ROW))}
+                        spellCheck={false}
+                        wrap="off"
+                        data-testid="textarea-block-hex"
+                      />
+                    </div>
+                    {allocationWriteStatus === 'error' && <div className="warning-copy">{allocationWriteMessage}</div>}
+                    <div className="modal-actions">
+                      <button
+                        className="action-button"
+                        onClick={() => setAllocationHexDraft(bytesToHexString(selectedAllocationBytes))}
+                        disabled={allocationWriteStatus === 'writing'}
+                        data-testid="button-revert-block-hex"
+                      >
+                        Revert
+                      </button>
+                      <button
+                        className="action-button danger"
+                        onClick={() => void writeAllocationBytes()}
+                        disabled={allocationWriteStatus === 'writing'}
+                        data-testid="button-write-block-hex"
+                      >
+                        {allocationWriteStatus === 'writing' ? 'Writing…' : 'Write to device'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
+  // Rendered inline under the clicked row (list view) or under the icon
+  // grid (icon view) — there's no separate "map" mount point here since the
+  // TinyELF file list has no page-map equivalent.
+  const renderFileInspector = () => (
+    <section className="preview-panel inline-inspector" data-testid="panel-file-inspector">
+      <div className="preview-head"><h2>File inspector</h2><div className="preview-tabs"><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => setPreviewMode('preview')} data-testid="button-preview-mode">Preview</button><button className={previewMode === 'hex' ? 'active' : ''} onClick={() => setPreviewMode('hex')} data-testid="button-hex-mode">Hex</button></div></div>
+      <div className="preview-body">
+        {!selectedFile ? <div className="preview-empty"><div><Hexagon size={25} /><br />Select a file to inspect its contents.</div></div> : previewMode === 'preview' ? <div className="preview-content"><div className="preview-file-title"><FileText size={15} />{selectedFile.name}<small>{formatSize(selectedFile.size)}</small></div>{selectedPreview || 'Binary data — switch to Hex for a byte-level view.'}</div> : <div className="hex-view"><div className="preview-file-title"><Hexagon size={15} />{selectedFile.name}<small>{selectedFile.bytes.length} bytes</small></div>{hexRows.map((row, index) => <div className="hex-row" key={index}><span className="hex-address">{hex(index * 16, 4)}</span><span className="hex-bytes">{row.map((byte) => hex(byte)).join(' ')}</span><span className="hex-ascii">{row.map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '·').join('')}</span></div>)}</div>}
+      </div>
+    </section>
+  );
 
   return (
     <div className="console-app">
@@ -795,7 +918,7 @@ function Home() {
           </div>
         </header>
 
-        {isSaveKeyView ? (
+        {!isDisconnected && (isSaveKeyView ? (
           <section className="toolbar" aria-label="Allocation actions">
             <a className="action-button" href={ALLOCATION_LIST_URL} target="_blank" rel="noopener noreferrer" data-testid="link-allocation-source"><ExternalLink size={14} /><span>View registry source</span></a>
             <div className="tool-divider" />
@@ -814,14 +937,37 @@ function Home() {
               <button className={view === 'icons' ? 'selected' : ''} onClick={() => setView('icons')} title="Icon view" data-testid="button-icon-view"><MoreHorizontal size={15} /></button>
             </div>
           </section>
+        ))}
+
+        {!isDisconnected && (
+          <div className="breadcrumbs" aria-label="Current drive">
+            <span className="crumb current">{activeDrive.label} · {hex(activeDrive.address)} · {isSaveKeyView ? 'SaveKey allocation registry' : 'TinyELF Basic filesystem'}</span>
+          </div>
         )}
 
-        <div className="breadcrumbs" aria-label="Current drive">
-          <span className="crumb current">{activeDrive.label} · {hex(activeDrive.address)} · {isSaveKeyView ? 'SaveKey allocation registry' : 'TinyELF Basic filesystem'}</span>
-        </div>
-
-        <div className="workspace">
-          {isSaveKeyView ? (
+        <div className={`workspace ${isDisconnected ? 'no-toolbar' : ''}`}>
+          {isDisconnected ? (
+            <section className="file-panel welcome-panel" aria-label="Getting started" data-testid="panel-welcome">
+              <div className="welcome-cover">
+                <img src={`${import.meta.env.BASE_URL}icons/icon-192.png`} alt="" width={120} height={120} />
+                <h2>SaveKey-Manager</h2>
+                <p>
+                  A browser-based manager for the SaveKey Plus, an EEPROM save-game cartridge for the Atari 2600 and
+                  other 8-bit homebrew platforms. Connect a Pico bridge to browse and edit the classic SaveKey
+                  allocation registry or the TinyELF Basic filesystem on real hardware.
+                </p>
+                <div className="welcome-actions">
+                  <button className="action-button primary" onClick={() => void picoBridge.connect()} disabled={!picoBridge.isSupported} data-testid="button-connect-welcome">
+                    <Network size={14} /><span>Connect to Pico bridge</span>
+                  </button>
+                  <a className="action-button" href={PROJECT_REPO_URL} target="_blank" rel="noopener noreferrer" data-testid="link-project-docs">
+                    <ExternalLink size={14} /><span>View documentation</span>
+                  </a>
+                </div>
+                {!picoBridge.isSupported && <p className="protect-line-light">Web Serial is not supported in this browser — use Chrome, Edge, or Firefox 151+.</p>}
+              </div>
+            </section>
+          ) : isSaveKeyView ? (
             <section className="file-panel" aria-label="Allocation registry">
               <div className="panel-head">
                 <div className="panel-title">
@@ -859,18 +1005,24 @@ function Home() {
                 <span><i className="page-cell status-scratch" />scratchpad</span>
                 <span><i className="page-cell status-free" />free</span>
               </div>
+              {allocationSelectionSource === 'map' && selectedAllocation && renderAllocationInspector()}
               <table className="file-table">
                 <thead><tr><th style={{ width: '34%' }}>Title</th><th style={{ width: '18%' }}>Developer</th><th style={{ width: '14%' }}>Platform</th><th style={{ width: '12%' }}>Pages</th><th style={{ width: '12%' }}>Status</th><th>On device</th></tr></thead>
                 <tbody>
                   {visibleAllocations.map((entry) => (
-                    <tr className={`file-row ${selectedAllocationId === entry.id ? 'selected' : ''}`} key={entry.id} onClick={() => setSelectedAllocationId(entry.id)} data-testid={`row-allocation-${entry.id}`}>
-                      <td><div className="name-cell"><span className="file-name">{entry.title}</span></div></td>
-                      <td>{entry.developer ?? '—'}</td>
-                      <td>{entry.platform ?? '—'}</td>
-                      <td>{hex(entry.pageStart, 3)}–{hex(entry.pageEnd, 3)}</td>
-                      <td><span className={`tag status-${entry.status}`}>{entry.status}</span></td>
-                      <td>{entryHasAnyData(entry) ? <span className="tag has-data-tag">data</span> : <span className="tag no-data-tag">empty</span>}</td>
-                    </tr>
+                    <Fragment key={entry.id}>
+                      <tr className={`file-row ${selectedAllocationId === entry.id ? 'selected' : ''}`} onClick={() => selectAllocationRow(entry.id)} data-testid={`row-allocation-${entry.id}`}>
+                        <td><div className="name-cell"><span className="file-name">{entry.title}</span></div></td>
+                        <td>{entry.developer ?? '—'}</td>
+                        <td>{entry.platform ?? '—'}</td>
+                        <td>{hex(entry.pageStart, 3)}–{hex(entry.pageEnd, 3)}</td>
+                        <td><span className={`tag status-${entry.status}`}>{entry.status}</span></td>
+                        <td>{entryHasAnyData(entry) ? <span className="tag has-data-tag">data</span> : <span className="tag no-data-tag">empty</span>}</td>
+                      </tr>
+                      {allocationSelectionSource === 'list' && selectedAllocationId === entry.id && (
+                        <tr className="inline-inspector-row"><td colSpan={6}>{renderAllocationInspector()}</td></tr>
+                      )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -890,16 +1042,24 @@ function Home() {
                   <thead><tr><th style={{ width: '42%' }}>Name</th><th style={{ width: '16%' }}>Size</th><th style={{ width: '26%' }}>Modified</th><th>Attr</th></tr></thead>
                   <tbody>
                     {visibleFiles.map((file) => { const Icon = fileIcon(file.extension); return (
-                      <tr className={`file-row ${selectedFileId === file.id ? 'selected' : ''}`} key={file.id} onClick={() => setSelectedFileId(file.id)} data-testid={`row-file-${file.id}`}>
-                        <td><div className="name-cell"><Icon size={16} className="file-icon" /><span className="file-name">{file.name}</span></div></td><td>{formatSize(file.size)}</td><td>{file.modified}</td><td><span className="tag">{file.attributes}</span></td>
-                      </tr>
+                      <Fragment key={file.id}>
+                        <tr className={`file-row ${selectedFileId === file.id ? 'selected' : ''}`} onClick={() => setSelectedFileId(file.id)} data-testid={`row-file-${file.id}`}>
+                          <td><div className="name-cell"><Icon size={16} className="file-icon" /><span className="file-name">{file.name}</span></div></td><td>{formatSize(file.size)}</td><td>{file.modified}</td><td><span className="tag">{file.attributes}</span></td>
+                        </tr>
+                        {selectedFileId === file.id && (
+                          <tr className="inline-inspector-row"><td colSpan={4}>{renderFileInspector()}</td></tr>
+                        )}
+                      </Fragment>
                     ); })}
                   </tbody>
                 </table>
               ) : (
-                <div className="folder-grid">
-                  {visibleFiles.map((file) => { const Icon = fileIcon(file.extension); return <button className={`file-card ${selectedFileId === file.id ? 'selected' : ''}`} key={file.id} onClick={() => setSelectedFileId(file.id)} data-testid={`card-file-${file.id}`}><div className="file-card-top"><Icon size={20} className="file-icon" /><span className="tag">{file.extension}</span></div><div className="file-card-title"><strong>{file.name}</strong></div><div className="file-card-meta"><span>{formatSize(file.size)}</span><span>{file.attributes}</span></div></button>; })}
-                </div>
+                <>
+                  <div className="folder-grid">
+                    {visibleFiles.map((file) => { const Icon = fileIcon(file.extension); return <button className={`file-card ${selectedFileId === file.id ? 'selected' : ''}`} key={file.id} onClick={() => setSelectedFileId(file.id)} data-testid={`card-file-${file.id}`}><div className="file-card-top"><Icon size={20} className="file-icon" /><span className="tag">{file.extension}</span></div><div className="file-card-title"><strong>{file.name}</strong></div><div className="file-card-meta"><span>{formatSize(file.size)}</span><span>{file.attributes}</span></div></button>; })}
+                  </div>
+                  {selectedFile && renderFileInspector()}
+                </>
               )}
               {!visibleFiles.length && (() => {
                 const notFormatted = picoBridge.status === 'connected' && !liveDrives[activeDriveId];
@@ -948,7 +1108,6 @@ function Home() {
                         </div>
                       ))
                     )}
-                    <div className="tool-divider" />
                     <button className="action-button" onClick={() => void picoBridge.rescan()} data-testid="button-rescan-pico">
                       <RefreshCw size={14} /><span>Rescan</span>
                     </button>
@@ -996,89 +1155,6 @@ function Home() {
               </div>
             </section>
 
-            {isSaveKeyView ? (
-              <section className="preview-panel" data-testid="panel-allocation-inspector">
-                <div className="preview-head"><h2>Allocation inspector</h2></div>
-                <div className="preview-body">
-                  {!selectedAllocation ? (
-                    <div className="preview-empty"><div><Hexagon size={25} /><br />Select a page or registry entry to inspect it.</div></div>
-                  ) : (
-                    <div className="allocation-detail">
-                      <div className="preview-file-title"><LayoutGrid size={15} />{selectedAllocation.title}<small className={`status-${selectedAllocation.status}`}>{selectedAllocation.status}</small></div>
-                      <div className={`detail-row detail-data-row ${entryHasAnyData(selectedAllocation) ? 'has-data' : 'no-data'}`}><span>On this device</span><span>{entryHasAnyData(selectedAllocation) ? 'Save data present' : 'No data — slot reserved only'}</span></div>
-                      <div className="detail-row"><span>Kind</span><span>{selectedAllocation.kind}</span></div>
-                      {selectedAllocation.developer && <div className="detail-row"><span>Developer</span><span>{selectedAllocation.developer}</span></div>}
-                      {selectedAllocation.platform && <div className="detail-row"><span>Platform</span><span>{selectedAllocation.platform}</span></div>}
-                      <div className="detail-row"><span>Pages</span><span>{hex(selectedAllocation.pageStart, 3)}–{hex(selectedAllocation.pageEnd, 3)}</span></div>
-                      <div className="detail-row"><span>Byte range</span><span>{hex(selectedAllocation.pageStart * 64, 4)}–{hex(selectedAllocation.pageEnd * 64 + 63, 4)}</span></div>
-                      {selectedAllocation.verified && <div className="detail-row"><span>Verified</span><span>{selectedAllocation.verified}</span></div>}
-                      {selectedAllocation.notes && <div className="detail-notes">{selectedAllocation.notes}</div>}
-                      {selectedAllocation.urls && selectedAllocation.urls.length > 0 && (
-                        <div className="detail-links">
-                          {selectedAllocation.urls.map((url) => <a key={url} href={url} target="_blank" rel="noopener noreferrer">{url}</a>)}
-                        </div>
-                      )}
-                      {isRealSaveKeyDrive && (
-                        <div className="block-data">
-                          <div className="detail-row"><span>Block data</span><span>{selectedAllocationBytes ? `${selectedAllocationBytes.length} bytes` : 'Loading…'}</span></div>
-                          {selectedAllocationBytes && (
-                            <>
-                              <div className="hex-editor-wrap">
-                                <div className="hex-editor-gutter" ref={hexGutterRef}>
-                                  {Array.from(
-                                    { length: Math.max(1, Math.ceil(selectedAllocationBytes.length / HEX_BYTES_PER_ROW)) },
-                                    (_, row) => <div key={row}>{hex(row * HEX_BYTES_PER_ROW, 4)}</div>,
-                                  )}
-                                </div>
-                                <textarea
-                                  className="block-hex-editor"
-                                  value={allocationHexDraft}
-                                  onChange={(event) => setAllocationHexDraft(event.target.value)}
-                                  onScroll={(event) => {
-                                    if (hexGutterRef.current) hexGutterRef.current.scrollTop = event.currentTarget.scrollTop;
-                                  }}
-                                  rows={Math.max(4, Math.ceil(selectedAllocationBytes.length / HEX_BYTES_PER_ROW))}
-                                  spellCheck={false}
-                                  wrap="off"
-                                  data-testid="textarea-block-hex"
-                                />
-                              </div>
-                              {allocationWriteStatus === 'error' && <div className="warning-copy">{allocationWriteMessage}</div>}
-                              <div className="modal-actions">
-                                <button
-                                  className="action-button"
-                                  onClick={() => setAllocationHexDraft(bytesToHexString(selectedAllocationBytes))}
-                                  disabled={allocationWriteStatus === 'writing'}
-                                  data-testid="button-revert-block-hex"
-                                >
-                                  Revert
-                                </button>
-                                <button
-                                  className="action-button danger"
-                                  onClick={() => void writeAllocationBytes()}
-                                  disabled={allocationWriteStatus === 'writing'}
-                                  data-testid="button-write-block-hex"
-                                >
-                                  {allocationWriteStatus === 'writing' ? 'Writing…' : 'Write to device'}
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </section>
-            ) : (
-              <section className="preview-panel" data-testid="panel-file-inspector">
-                <div className="preview-head"><h2>File inspector</h2><div className="preview-tabs"><button className={previewMode === 'preview' ? 'active' : ''} onClick={() => setPreviewMode('preview')} data-testid="button-preview-mode">Preview</button><button className={previewMode === 'hex' ? 'active' : ''} onClick={() => setPreviewMode('hex')} data-testid="button-hex-mode">Hex</button></div></div>
-                <div className="preview-body">
-                  {!selectedFile ? <div className="preview-empty"><div><Hexagon size={25} /><br />Select a file to inspect its contents.</div></div> : previewMode === 'preview' ? <div className="preview-content"><div className="preview-file-title"><FileText size={15} />{selectedFile.name}<small>{formatSize(selectedFile.size)}</small></div>{selectedPreview || 'Binary data — switch to Hex for a byte-level view.'}</div> : <div className="hex-view"><div className="preview-file-title"><Hexagon size={15} />{selectedFile.name}<small>{selectedFile.bytes.length} bytes</small></div>{hexRows.map((row, index) => <div className="hex-row" key={index}><span className="hex-address">{hex(index * 16, 4)}</span><span className="hex-bytes">{row.map((byte) => hex(byte)).join(' ')}</span><span className="hex-ascii">{row.map((byte) => byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '·').join('')}</span></div>)}</div>}
-                </div>
-              </section>
-            )}
-
             <section className="activity-panel" id="activity-log" data-testid="panel-activity-log">
                <div className="activity-title"><Activity size={14} /><strong>Operations log</strong></div>
               <div className="activity-list">{activity.map((item) => <div className="activity-item" key={item.id}><span className="activity-time">{item.time}</span><span className="activity-copy"><strong>{item.message}</strong>{item.detail ? ` · ${item.detail}` : ''}</span></div>)}</div>
@@ -1097,34 +1173,79 @@ function Home() {
             <div className="modal-head">
               <div>
                 <h2 id="format-dialog-title">Format device {driveLabelForAddress(formatTarget.startAddress)} ({hex(formatTarget.startAddress)})</h2>
-                <p>Writes only the boot sector, VTOC, and directory — existing data sectors are left untouched.</p>
+                <p>
+                  {formatFilesystem === 'savekey'
+                    ? 'Writes only the system block (page 0) — existing game save pages are left untouched.'
+                    : 'Writes only the boot sector, VTOC, and directory — existing data sectors are left untouched.'}
+                </p>
               </div>
               <button className="modal-close" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-close-format-dialog">
                 <X size={17} />
               </button>
             </div>
             <div className="modal-body">
-              <label className="detail-row" htmlFor="format-capacity-select">
-                <span>EEPROM capacity</span>
+              <label className="detail-row" htmlFor="format-filesystem-select">
+                <span>Filesystem</span>
                 <select
-                  id="format-capacity-select"
-                  value={formatCapacityKiB}
+                  id="format-filesystem-select"
+                  value={formatFilesystem}
                   disabled={formatStatus === 'running'}
-                  onChange={(event) => setFormatCapacityKiB(Number(event.target.value))}
-                  data-testid="select-format-capacity"
+                  onChange={(event) => setFormatFilesystem(event.target.value as 'tinyelf' | 'savekey')}
+                  data-testid="select-format-filesystem"
                 >
-                  {EEPROM_CAPACITY_OPTIONS_KIB.map((kib) => (
-                    <option key={kib} value={kib}>{kib} KiB</option>
-                  ))}
+                  <option value="savekey">SaveKey (AtariVox EEPROM)</option>
+                  <option value="tinyelf">TinyELF Basic</option>
                 </select>
               </label>
-              <div className="format-summary" title="Computed from the chosen capacity — see firmware/pico-bridge README / tinyelf-format.ts for the exact layout rules">
-                <div className="format-summary-line"><span>Sector size</span><strong>{formatLayout.sectorSize} B</strong></div>
-                <div className="format-summary-line"><span>Total sectors</span><strong>{formatLayout.totalSectors}</strong></div>
-                <div className="format-summary-line"><span>VTOC</span><strong>sector {formatLayout.vtocStart}, {formatLayout.vtocSectors} sector{formatLayout.vtocSectors === 1 ? '' : 's'}</strong></div>
-                <div className="format-summary-line"><span>Directory</span><strong>sector {formatLayout.directoryStart}, {formatLayout.directorySectors} sector{formatLayout.directorySectors === 1 ? '' : 's'} · {formatLayout.maxFiles} files max</strong></div>
-                <div className="format-summary-line"><span>Data region</span><strong>from sector {formatLayout.dataStart}</strong></div>
-              </div>
+              {formatFilesystem === 'savekey' ? (
+                <>
+                  <label className="detail-row" htmlFor="format-tvmode-select">
+                    <span>TV mode</span>
+                    <select
+                      id="format-tvmode-select"
+                      value={formatTvMode}
+                      disabled={formatStatus === 'running'}
+                      onChange={(event) => setFormatTvMode(event.target.value as SaveKeyTvMode)}
+                      data-testid="select-format-tvmode"
+                    >
+                      <option value="ntsc60">NTSC · 60 Hz</option>
+                      <option value="ntsc50">NTSC · 50 Hz</option>
+                      <option value="pal60">PAL · 60 Hz</option>
+                      <option value="pal50">PAL · 50 Hz</option>
+                    </select>
+                  </label>
+                  <div className="format-summary" title="Per the original AtariVox Programmer's Guide — a plain SaveKey uses the same system-block layout">
+                    <div className="format-summary-line"><span>Page 0, $00–$07</span><strong>&quot;ATARIVOX&quot;</strong></div>
+                    <div className="format-summary-line"><span>Page 0, $08</span><strong>TV mode byte</strong></div>
+                    <div className="format-summary-line"><span>Page 0, $09–$3F</span><strong>unused (0xFF)</strong></div>
+                    <div className="format-summary-line"><span>Other pages</span><strong>untouched</strong></div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label className="detail-row" htmlFor="format-capacity-select">
+                    <span>EEPROM capacity</span>
+                    <select
+                      id="format-capacity-select"
+                      value={formatCapacityKiB}
+                      disabled={formatStatus === 'running'}
+                      onChange={(event) => setFormatCapacityKiB(Number(event.target.value))}
+                      data-testid="select-format-capacity"
+                    >
+                      {EEPROM_CAPACITY_OPTIONS_KIB.map((kib) => (
+                        <option key={kib} value={kib}>{kib} KiB</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="format-summary" title="Computed from the chosen capacity — see firmware/pico-bridge README / tinyelf-format.ts for the exact layout rules">
+                    <div className="format-summary-line"><span>Sector size</span><strong>{formatLayout.sectorSize} B</strong></div>
+                    <div className="format-summary-line"><span>Total sectors</span><strong>{formatLayout.totalSectors}</strong></div>
+                    <div className="format-summary-line"><span>VTOC</span><strong>sector {formatLayout.vtocStart}, {formatLayout.vtocSectors} sector{formatLayout.vtocSectors === 1 ? '' : 's'}</strong></div>
+                    <div className="format-summary-line"><span>Directory</span><strong>sector {formatLayout.directoryStart}, {formatLayout.directorySectors} sector{formatLayout.directorySectors === 1 ? '' : 's'} · {formatLayout.maxFiles} files max</strong></div>
+                    <div className="format-summary-line"><span>Data region</span><strong>from sector {formatLayout.dataStart}</strong></div>
+                  </div>
+                </>
+              )}
               {formatStatus === 'error' && <div className="warning-copy">{formatMessage}</div>}
               {(formatStatus === 'running' || formatStatus === 'done') && <p className="format-status">{formatMessage}</p>}
               <div className="modal-actions">

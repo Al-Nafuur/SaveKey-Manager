@@ -65,3 +65,51 @@ export async function writePageRange(
     await bridge.write(addr, memAddr, chunk);
   }
 }
+
+// Classic SaveKey/AtariVox "System Settings" page (page 0): an 8-byte ASCII
+// signature "ATARIVOX" followed by a TV Mode byte, per the original AtariVox
+// Programmer's Guide and the AtariAge allocation list — confirmed to be the
+// same on a plain SaveKey (it's the same EEPROM format, just without the
+// SpeakJet chip). Bytes $09 onward are documented as unused/reserved, so
+// they're left at the EEPROM's blank value (0xFF) rather than zeroed.
+const SAVEKEY_SIGNATURE = [0x41, 0x54, 0x41, 0x52, 0x49, 0x56, 0x4f, 0x58]; // "ATARIVOX"
+const TV_MODE_OFFSET = 8;
+
+// Bit 7: 0 = PAL, 1 = NTSC. Bit 6: 0 = 60 Hz, 1 = 50 Hz.
+export const SAVEKEY_TV_MODE_BYTES = {
+  ntsc60: 0b1000_0000,
+  ntsc50: 0b1100_0000,
+  pal60: 0b0000_0000,
+  pal50: 0b0100_0000,
+} as const;
+export type SaveKeyTvMode = keyof typeof SAVEKEY_TV_MODE_BYTES;
+
+export function buildSaveKeySystemPage(pageSize: number, tvMode: SaveKeyTvMode): Uint8Array {
+  const page = new Uint8Array(pageSize).fill(0xff);
+  page.set(SAVEKEY_SIGNATURE, 0);
+  page[TV_MODE_OFFSET] = SAVEKEY_TV_MODE_BYTES[tvMode];
+  return page;
+}
+
+// "Format as SaveKey" only ever means (re)writing this one system page —
+// unlike TinyELF FORMAT there's no VTOC/directory to lay out, and existing
+// game save data on other pages must never be touched. Skips the write
+// entirely if the page already matches, per the project's wear-leveling rule.
+export async function formatSaveKeyDevice(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  pageSize: number,
+  tvMode: SaveKeyTvMode,
+  onProgress?: (message: string) => void,
+): Promise<void> {
+  const desired = buildSaveKeySystemPage(pageSize, tvMode);
+  onProgress?.('Checking system block…');
+  const current = await readPageRange(bridge, device, pageSize, 0, 0);
+  if (current.every((byte, i) => byte === desired[i])) {
+    onProgress?.('System block already matches — nothing written.');
+    return;
+  }
+  onProgress?.('Writing SaveKey system block (page 0)…');
+  await writePageRange(bridge, device, pageSize, 0, 0, desired);
+  onProgress?.('Format complete.');
+}

@@ -208,6 +208,9 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .crumb.current { color:#20234d; font-weight:600; }
 
 .workspace { display:grid; grid-template-columns:minmax(0,1fr) 315px; gap:20px; padding: 0 clamp(20px, 3vw, 43px) 26px; }
+/* Toolbar/breadcrumbs are hidden while disconnected (see App.tsx) — their own
+   padding normally separates .workspace from .topbar, so make up for it here. */
+.workspace.no-toolbar { padding-top:26px; }
 .file-panel, .preview-panel, .activity-panel, .hardware-panel {
   border:1px solid #3f4986; background:rgba(244,231,190,.74); box-shadow:var(--shadow-card);
 }
@@ -246,6 +249,22 @@ button:disabled { cursor: not-allowed; opacity: .46; }
 .empty-state .empty-icon { width:46px; height:46px; display:grid; place-items:center; margin:0 auto 15px; border:1px dashed #56619a; border-radius:1px; color:#315da8; background:rgba(246,226,176,.43); }
 .empty-state h3 { margin:0 0 5px; color:#20234d; font-size:13px; text-transform:uppercase; }
 .empty-state p { max-width:280px; margin:0 auto; color:#53608e; font:10px/1.65 var(--app-font-mono); }
+
+.welcome-panel { display:grid; place-items:center; padding:48px 24px; min-height:460px; }
+.welcome-cover { max-width:420px; display:grid; justify-items:center; gap:14px; text-align:center; }
+.welcome-cover img { border-radius:2px; box-shadow:6px 6px 0 rgba(44,49,99,.22); }
+.welcome-cover h2 { margin:6px 0 0; color:#20234d; font-family:var(--app-font-mono); font-size:20px; letter-spacing:-.03em; text-transform:uppercase; }
+.welcome-cover p { margin:0; color:#4e5785; font:11px/1.7 var(--app-font-mono); }
+.welcome-actions { display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:6px; }
+.protect-line-light { margin:4px 0 0; color:#76233a; font:9px var(--app-font-mono); }
+
+/* Inspector mounted inline in the flow (under the page map, or under a
+   clicked row/grid) instead of the old fixed 315px sidebar slot — see
+   allocationSelectionSource / renderAllocationInspector / renderFileInspector
+   in App.tsx. */
+.inline-inspector { margin:0 15px 15px; }
+.inline-inspector-row td { white-space:normal; overflow:visible; cursor:default; padding:0; border-bottom:2px solid #56619a; background:rgba(251,239,199,.55); }
+.inline-inspector-row .preview-panel { border:0; box-shadow:none; background:transparent; }
 
 .page-map { display:grid; grid-template-columns:repeat(32,1fr); gap:2px; padding:15px; }
 .page-cell { aspect-ratio:1; padding:0; border:1px solid rgba(79,90,137,.25); border-radius:1px; background:rgba(255,255,255,.4); transition:border-color .1s ease; }
