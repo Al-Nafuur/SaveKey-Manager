@@ -367,6 +367,12 @@ function Home() {
   const [previewMode, setPreviewMode] = useState<'preview' | 'hex'>('preview');
   const [activity, setActivity] = useState(initialActivity);
   const [dialog, setDialog] = useState<'delete' | 'restore' | null>(null);
+  // Which device Restore targets — set the moment its row's button is
+  // clicked (before the file picker even opens), read again once a file is
+  // actually chosen. One hidden file input is shared across all device
+  // rows rather than one per row, so this is how its onChange knows which
+  // row triggered it.
+  const [restoreTarget, setRestoreTarget] = useState<DetectedDevice | null>(null);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreStatus, setRestoreStatus] = useState<'idle' | 'running' | 'error'>('idle');
   const [restoreMessage, setRestoreMessage] = useState('');
@@ -406,10 +412,6 @@ function Home() {
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
   const selectedFile = files.find((file) => file.id === selectedFileId) ?? null;
-  // The real device behind the active drive, regardless of which format
-  // it's showing as — needed for a whole-device raw backup/restore, which
-  // doesn't care about SaveKey vs TinyELF at all.
-  const activeLiveDevice = liveDrives[activeDriveId]?.device ?? liveSaveKeyDevices[activeDriveId]?.device;
 
   // A real connected classic-format drive uses the live community registry
   // (once fetched) instead of the hardcoded demo entries — see the
@@ -926,24 +928,26 @@ function Home() {
   // and Gopher2600 use for their SaveKey/AtariVox EEPROM persistence (raw
   // N-byte binary, no header/magic/checksum), so a backup taken here can be
   // dropped straight into either emulator's save location and vice versa.
-  const exportBackup = async () => {
+  const exportBackup = async (device: DetectedDevice) => {
     const bridge = picoBridge.bridge;
-    if (!bridge || !activeLiveDevice) return;
+    if (!bridge) return;
+    const label = driveLabelForAddress(device.startAddress);
     try {
-      const bytes = await readDeviceBytes(bridge, activeLiveDevice, 0, activeDrive.totalBytes);
+      const bytes = await readDeviceBytes(bridge, device, 0, device.capacityBytes);
       const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = `${activeDrive.label}_eeprom_${formatSize(activeDrive.totalBytes).replace(/\s/g, '')}.dat`;
+      link.download = `${label}_eeprom_${formatSize(device.capacityBytes).replace(/\s/g, '')}.dat`;
       link.click();
       URL.revokeObjectURL(link.href);
-      pushActivity('Backup exported', `${activeDrive.label} · ${formatSize(bytes.length)}`);
+      pushActivity('Backup exported', `${label} · ${formatSize(bytes.length)}`);
     } catch (error) {
       pushActivity('Backup failed', error instanceof Error ? error.message : String(error));
     }
   };
 
-  const openRestoreDialog = (file: File) => {
+  const openRestoreDialog = (device: DetectedDevice, file: File) => {
+    setRestoreTarget(device);
     setRestoreFile(file);
     setRestoreStatus('idle');
     setRestoreMessage('');
@@ -954,24 +958,27 @@ function Home() {
     if (restoreStatus === 'running') return;
     setDialog(null);
     setRestoreFile(null);
+    setRestoreTarget(null);
   };
 
   const runRestore = async () => {
     const bridge = picoBridge.bridge;
-    if (!bridge || !activeLiveDevice || !restoreFile) return;
+    if (!bridge || !restoreTarget || !restoreFile) return;
+    const label = driveLabelForAddress(restoreTarget.startAddress);
     const bytes = new Uint8Array(await restoreFile.arrayBuffer());
-    if (bytes.length !== activeDrive.totalBytes) {
+    if (bytes.length !== restoreTarget.capacityBytes) {
       setRestoreStatus('error');
-      setRestoreMessage(`Expected exactly ${formatSize(activeDrive.totalBytes)} (${activeDrive.totalBytes} bytes) — this file is ${formatSize(bytes.length)}.`);
+      setRestoreMessage(`Expected exactly ${formatSize(restoreTarget.capacityBytes)} (${restoreTarget.capacityBytes} bytes) — this file is ${formatSize(bytes.length)}.`);
       return;
     }
     setRestoreStatus('running');
     setRestoreMessage('Writing…');
     try {
-      await writeDeviceBytes(bridge, activeLiveDevice, 0, bytes);
-      pushActivity('Backup restored', `${activeDrive.label} · ${formatSize(bytes.length)}`);
+      await writeDeviceBytes(bridge, restoreTarget, 0, bytes);
+      pushActivity('Backup restored', `${label} · ${formatSize(bytes.length)}`);
       setDialog(null);
       setRestoreFile(null);
+      setRestoreTarget(null);
       await refreshDrive();
     } catch (error) {
       setRestoreStatus('error');
@@ -1461,23 +1468,56 @@ function Home() {
                       <p className="protect-line">No device detected on the bus.</p>
                     ) : (
                       picoBridge.devices.map((device) => (
-                        <div className="hardware-stat" key={device.startAddress}>
-                          <span>
-                            {device.addressCount === 1
-                              ? hex(device.startAddress)
-                              : `${hex(device.startAddress)}–${hex(device.startAddress + device.addressCount - 1)}`}
-                          </span>
-                          <strong>{formatSize(device.capacityBytes)}</strong>
-                          <button
-                            className="action-button"
-                            onClick={() => openFormatDialog(device)}
-                            data-testid={`button-format-${hex(device.startAddress)}`}
-                          >
-                            <span>Format</span>
-                          </button>
+                        <div className="device-row" key={device.startAddress}>
+                          <div className="hardware-stat">
+                            <span>
+                              {device.addressCount === 1
+                                ? hex(device.startAddress)
+                                : `${hex(device.startAddress)}–${hex(device.startAddress + device.addressCount - 1)}`}
+                            </span>
+                            <strong>{formatSize(device.capacityBytes)}</strong>
+                            <button
+                              className="action-button"
+                              onClick={() => openFormatDialog(device)}
+                              data-testid={`button-format-${hex(device.startAddress)}`}
+                            >
+                              <span>Format</span>
+                            </button>
+                          </div>
+                          <div className="backup-actions">
+                            <button
+                              className="action-button"
+                              onClick={() => void exportBackup(device)}
+                              title="Raw byte-for-byte dump — same format Stella/Gopher2600 use for SaveKey/AtariVox EEPROM saves"
+                              data-testid={`button-backup-${hex(device.startAddress)}`}
+                            >
+                              <Download size={14} /><span>Backup</span>
+                            </button>
+                            <button
+                              className="action-button"
+                              onClick={() => {
+                                setRestoreTarget(device);
+                                restoreFileInputRef.current?.click();
+                              }}
+                              data-testid={`button-restore-${hex(device.startAddress)}`}
+                            >
+                              <Upload size={14} /><span>Restore</span>
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}
+                    <input
+                      ref={restoreFileInputRef}
+                      type="file"
+                      hidden
+                      onChange={(event) => {
+                        const picked = event.target.files?.[0];
+                        if (picked && restoreTarget) openRestoreDialog(restoreTarget, picked);
+                        event.target.value = '';
+                      }}
+                      data-testid="input-restore-backup"
+                    />
                     <button className="action-button" onClick={() => void picoBridge.rescan()} data-testid="button-rescan-pico">
                       <RefreshCw size={14} /><span>Rescan</span>
                     </button>
@@ -1521,27 +1561,6 @@ function Home() {
                     </div>
                   );
                 })()}
-                {activeLiveDevice && (
-                  <div className="capacity-block backup-actions" title="A flat, headerless raw dump — the same format Stella and Gopher2600 use for their SaveKey/AtariVox EEPROM save files, so a backup taken here can be dropped straight into either emulator's save location and vice versa">
-                    <button className="action-button" onClick={() => void exportBackup()} data-testid="button-export-backup">
-                      <Download size={14} /><span>Backup</span>
-                    </button>
-                    <button className="action-button" onClick={() => restoreFileInputRef.current?.click()} data-testid="button-restore-backup">
-                      <Upload size={14} /><span>Restore</span>
-                    </button>
-                    <input
-                      ref={restoreFileInputRef}
-                      type="file"
-                      hidden
-                      onChange={(event) => {
-                        const picked = event.target.files?.[0];
-                        if (picked) openRestoreDialog(picked);
-                        event.target.value = '';
-                      }}
-                      data-testid="input-restore-backup"
-                    />
-                  </div>
-                )}
                 <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
               </div>
             </section>
