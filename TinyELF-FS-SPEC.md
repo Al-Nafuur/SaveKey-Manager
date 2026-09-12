@@ -169,10 +169,26 @@ directory sectors, never the data region. SAVE writes only newly-allocated data
 sectors, the VTOC sector, and the one directory sector patched. Never
 blanket-write or zero sectors that don't need to change.
 
+## Interop note: treat the flags byte as bits, never as an exact value
+
+Confirmed the hard way with the separate TinyELF Basic interpreter project
+(2026-09-12): a from-scratch implementation there checked a directory entry's
+flags byte with exact equality (`entry[0] == 0x40`) to mean "in use" — but a
+file this app's SAVE writes always has flags `IN_USE | CREATED_BY_DOS2`
+(`0x40 | 0x02 = 0x42`), so an exact-0x40 check silently skipped every file we
+uploaded. Any implementation reading this directory format must treat
+"present" as *"not (`$00` never-used, or `$80` deleted-bit set)"* and check
+individual bits (`LOCKED $20`, `CREATED_BY_DOS2 $02`, `OPENED_FOR_OUTPUT $01`)
+independently — never compare the whole byte against one specific combination.
+The same applies going the other way: our own future DELETE (below) must OR
+in the `$80` bit rather than overwriting the whole flags byte, so it doesn't
+clobber bits some other tool (or a future version of this one) set.
+
 ## Still open / not yet implemented
 
-- **DELETE**: would need to flip the entry's `$80` deleted flag and free its
-  VTOC bits — not implemented yet.
+- **DELETE**: OR in the entry's `$80` deleted flag (don't overwrite the whole
+  flags byte — see the interop note above) and free its VTOC bits — not
+  implemented yet.
 - **CATALOG refresh nuances**: not fully worked out.
 - **Multi-VTOC-sector handling**: current code assumes exactly 1 VTOC sector.
   True for the entire 4 KiB–256 KiB range per the layout math, but not enforced
