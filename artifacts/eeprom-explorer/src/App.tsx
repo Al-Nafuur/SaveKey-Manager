@@ -29,7 +29,7 @@ import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
 import { usePicoBridge } from '@/hooks/use-pico-bridge';
 import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
-import { computeTinyElfLayout, formatDevice, readTinyElfHeader, type TinyElfLayout } from '@/lib/tinyelf-format';
+import { computeTinyElfLayout, formatDevice, readDeviceBytes, readTinyElfHeader, writeDeviceBytes, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
 import { loadFileContent, overwriteFileContent, saveFile } from '@/lib/tinyelf-save';
 import {
@@ -366,7 +366,11 @@ function Home() {
   const [view, setView] = useState<'list' | 'icons'>('list');
   const [previewMode, setPreviewMode] = useState<'preview' | 'hex'>('preview');
   const [activity, setActivity] = useState(initialActivity);
-  const [dialog, setDialog] = useState<'delete' | null>(null);
+  const [dialog, setDialog] = useState<'delete' | 'restore' | null>(null);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreStatus, setRestoreStatus] = useState<'idle' | 'running' | 'error'>('idle');
+  const [restoreMessage, setRestoreMessage] = useState('');
+  const restoreFileInputRef = useRef<HTMLInputElement>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hexGutterRef = useRef<HTMLDivElement>(null);
@@ -402,6 +406,10 @@ function Home() {
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
   const selectedFile = files.find((file) => file.id === selectedFileId) ?? null;
+  // The real device behind the active drive, regardless of which format
+  // it's showing as — needed for a whole-device raw backup/restore, which
+  // doesn't care about SaveKey vs TinyELF at all.
+  const activeLiveDevice = liveDrives[activeDriveId]?.device ?? liveSaveKeyDevices[activeDriveId]?.device;
 
   // A real connected classic-format drive uses the live community registry
   // (once fetched) instead of the hardcoded demo entries — see the
@@ -911,6 +919,64 @@ function Home() {
     setFiles((items) => items.filter((file) => file.id !== selectedFile.id));
     setSelectedFileId(null);
     setDialog(null);
+  };
+
+  // Whole-device raw backup: a flat, headerless dump of the drive's exact
+  // bytes — this is deliberately the same format Stella (savekey_eeprom.dat)
+  // and Gopher2600 use for their SaveKey/AtariVox EEPROM persistence (raw
+  // N-byte binary, no header/magic/checksum), so a backup taken here can be
+  // dropped straight into either emulator's save location and vice versa.
+  const exportBackup = async () => {
+    const bridge = picoBridge.bridge;
+    if (!bridge || !activeLiveDevice) return;
+    try {
+      const bytes = await readDeviceBytes(bridge, activeLiveDevice, 0, activeDrive.totalBytes);
+      const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `${activeDrive.label}_eeprom_${formatSize(activeDrive.totalBytes).replace(/\s/g, '')}.dat`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      pushActivity('Backup exported', `${activeDrive.label} · ${formatSize(bytes.length)}`);
+    } catch (error) {
+      pushActivity('Backup failed', error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openRestoreDialog = (file: File) => {
+    setRestoreFile(file);
+    setRestoreStatus('idle');
+    setRestoreMessage('');
+    setDialog('restore');
+  };
+
+  const closeRestoreDialog = () => {
+    if (restoreStatus === 'running') return;
+    setDialog(null);
+    setRestoreFile(null);
+  };
+
+  const runRestore = async () => {
+    const bridge = picoBridge.bridge;
+    if (!bridge || !activeLiveDevice || !restoreFile) return;
+    const bytes = new Uint8Array(await restoreFile.arrayBuffer());
+    if (bytes.length !== activeDrive.totalBytes) {
+      setRestoreStatus('error');
+      setRestoreMessage(`Expected exactly ${formatSize(activeDrive.totalBytes)} (${activeDrive.totalBytes} bytes) — this file is ${formatSize(bytes.length)}.`);
+      return;
+    }
+    setRestoreStatus('running');
+    setRestoreMessage('Writing…');
+    try {
+      await writeDeviceBytes(bridge, activeLiveDevice, 0, bytes);
+      pushActivity('Backup restored', `${activeDrive.label} · ${formatSize(bytes.length)}`);
+      setDialog(null);
+      setRestoreFile(null);
+      await refreshDrive();
+    } catch (error) {
+      setRestoreStatus('error');
+      setRestoreMessage(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const refreshDrive = async () => {
@@ -1455,6 +1521,27 @@ function Home() {
                     </div>
                   );
                 })()}
+                {activeLiveDevice && (
+                  <div className="capacity-block backup-actions" title="A flat, headerless raw dump — the same format Stella and Gopher2600 use for their SaveKey/AtariVox EEPROM save files, so a backup taken here can be dropped straight into either emulator's save location and vice versa">
+                    <button className="action-button" onClick={() => void exportBackup()} data-testid="button-export-backup">
+                      <Download size={14} /><span>Backup</span>
+                    </button>
+                    <button className="action-button" onClick={() => restoreFileInputRef.current?.click()} data-testid="button-restore-backup">
+                      <Upload size={14} /><span>Restore</span>
+                    </button>
+                    <input
+                      ref={restoreFileInputRef}
+                      type="file"
+                      hidden
+                      onChange={(event) => {
+                        const picked = event.target.files?.[0];
+                        if (picked) openRestoreDialog(picked);
+                        event.target.value = '';
+                      }}
+                      data-testid="input-restore-backup"
+                    />
+                  </div>
+                )}
                 <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
               </div>
             </section>
@@ -1564,6 +1651,32 @@ function Home() {
       )}
 
       {dialog === 'delete' && selectedFile && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title"><div className="modal-head"><div><h2 id="delete-dialog-title">Delete file?</h2><p>This action removes the entry from the local drive image.</p></div><button className="modal-close" onClick={() => setDialog(null)} data-testid="button-close-delete-dialog"><X size={17} /></button></div><div className="modal-body"><div className="warning-copy"><LockKeyhole size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />{selectedFile.name} is marked {selectedFile.attributes}. The physical write-protect switch is enabled, so this sample operation only changes the local view.</div><div className="modal-actions"><button className="action-button" onClick={() => setDialog(null)} data-testid="button-cancel-delete">Keep file</button><button className="action-button danger" onClick={removeFile} data-testid="button-confirm-delete"><Trash2 size={14} />Delete file</button></div></div></div></div>}
+
+      {dialog === 'restore' && restoreFile && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeRestoreDialog(); }}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="restore-dialog-title">
+            <div className="modal-head">
+              <div>
+                <h2 id="restore-dialog-title">Restore {activeDrive.label} from backup?</h2>
+                <p>Overwrites the entire {formatSize(activeDrive.totalBytes)} device with {restoreFile.name} — every file and page currently on it is replaced.</p>
+              </div>
+              <button className="modal-close" onClick={closeRestoreDialog} disabled={restoreStatus === 'running'} data-testid="button-close-restore-dialog">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {restoreStatus === 'error' && <div className="warning-copy">{restoreMessage}</div>}
+              {restoreStatus === 'running' && <p className="format-status">{restoreMessage}</p>}
+              <div className="modal-actions">
+                <button className="action-button" onClick={closeRestoreDialog} disabled={restoreStatus === 'running'} data-testid="button-cancel-restore">Cancel</button>
+                <button className="action-button danger" onClick={() => void runRestore()} disabled={restoreStatus === 'running'} data-testid="button-confirm-restore">
+                  {restoreStatus === 'running' ? 'Restoring…' : 'Overwrite device'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

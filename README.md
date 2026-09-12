@@ -10,7 +10,9 @@ A browser-based manager for the **SaveKey** and **SaveKey Plus**, EEPROM save-ga
 The SaveKey Plus has **two EEPROMs**, and this app understands both of the filesystem formats that can live on them:
 
 - **Classic SaveKey / AtariVox format** (32 KiB) — the format used by the existing SaveKey/AtariVox community tools. The app fetches the live [savekey-allocation-list](https://github.com/atariage-community/savekey-allocation-list) registry on start, shows which pages are actually occupied on the real hardware (not just what the registry claims), and lets you view/edit raw page data in a hex editor.
-- **TinyELF Basic filesystem** (up to 256 KiB, on the second EEPROM) — a custom, DOS 2.x-like filesystem (directory, VTOC, sector chaining) for the TinyELF Basic dialect. Supports FORMAT, SAVE, LOAD and DELETE, and is careful to only ever rewrite the sectors that actually changed (VTOC/directory/boot block) — never a blanket rewrite — for EEPROM wear-leveling.
+- **TinyELF Basic filesystem** (up to 256 KiB, on the second EEPROM) — a custom, DOS 2.x-like filesystem (directory, VTOC, sector chaining) for the TinyELF Basic dialect. Supports FORMAT, SAVE, and LOAD (DELETE not yet implemented), including an in-place text/hex editor with BASIC syntax highlighting, and is careful to only ever rewrite the sectors that actually changed (VTOC/directory/boot block) — never a blanket rewrite — for EEPROM wear-leveling. Full spec: [TinyELF-FS-SPEC.md](TinyELF-FS-SPEC.md).
+
+Either format also supports a whole-device **Backup/Restore**: a flat, headerless raw byte dump — deliberately the same format Stella (`savekey_eeprom.dat`) and [Gopher2600](https://github.com/JetSetIlly/Gopher2600) use for their SaveKey/AtariVox EEPROM saves, so a backup taken here can be dropped straight into either emulator's save location, and vice versa.
 
 **PicoBridge** — a Raspberry Pi Pico running dumb USB↔I²C bridge firmware — connects the browser to the SaveKey/SaveKey Plus; all filesystem/layout logic lives in the app itself, not the firmware. See [firmware/pico-bridge](firmware/pico-bridge) for PicoBridge and its wiring.
 

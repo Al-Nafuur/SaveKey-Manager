@@ -248,6 +248,35 @@ export async function readDeviceBytes(
   return result;
 }
 
+// Writes `data` starting at a flat logical byte offset within the device —
+// for a full raw device backup/restore, format-agnostic (doesn't know or
+// care about sectors/pages/directories). Chunked at a conservative fixed
+// 64 bytes: real EEPROM page sizes vary by chip in this project (64 B for
+// the classic 24LC256-class SaveKey chip, up to 256 B for the larger
+// AT24CM02-class chip — see computeTinyElfLayout's sector-size-per-capacity
+// comment), and a WRITE that's narrower than the chip's real page never
+// risks the same-page address wraparound corruption a too-wide one would;
+// it's just a few more commands for the larger chips. Also transparently
+// splits at 64 KiB address-block boundaries like readDeviceBytes.
+const RAW_WRITE_CHUNK_BYTES = 64;
+
+export async function writeDeviceBytes(
+  bridge: PicoBridge,
+  device: DetectedDevice,
+  byteOffset: number,
+  data: Uint8Array,
+): Promise<void> {
+  let offset = byteOffset;
+  let written = 0;
+  while (written < data.length) {
+    const { addr, memAddr } = resolveDeviceAddress(device, offset);
+    const chunk = Math.min(data.length - written, RAW_WRITE_CHUNK_BYTES, 0x10000 - memAddr);
+    await bridge.write(addr, memAddr, data.subarray(written, written + chunk));
+    offset += chunk;
+    written += chunk;
+  }
+}
+
 export async function readTinyElfHeader(bridge: PicoBridge, device: DetectedDevice): Promise<TinyElfLayout | null> {
   const bytes = await readDeviceBytes(bridge, device, 0, TINYELF_FIELDS_OFFSET + FS_MAGIC.length + 2 + 8);
   return parseHeaderSector(bytes);

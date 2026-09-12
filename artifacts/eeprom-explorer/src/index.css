@@ -309,6 +309,8 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .capacity-line strong { color:#ffdd77; font-weight:500; }
 .capacity-track { height:7px; margin:8px 0 6px; border:1px solid #7180c0; border-radius:0; background:#11163e; overflow:hidden; }
 .capacity-track span { display:block; width:31.7%; height:100%; background:linear-gradient(90deg,#ff7b00,#ffb000); }
+.backup-actions { display:flex; gap:8px; }
+.backup-actions .action-button { flex:1; }
 .protect-line { display:flex; align-items:center; gap:7px; margin-top:12px; color:#a9d9d2; font:9px var(--app-font-mono); }
 .protect-line svg { color:#ffdd77; }
 .preview-panel { border-radius:1px; }
