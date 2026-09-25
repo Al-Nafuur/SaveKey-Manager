@@ -928,18 +928,35 @@ function Home() {
   // and Gopher2600 use for their SaveKey/AtariVox EEPROM persistence (raw
   // N-byte binary, no header/magic/checksum), so a backup taken here can be
   // dropped straight into either emulator's save location and vice versa.
+  // How many bytes a whole-device backup/restore covers for this device. A
+  // device spanning several I2C addresses is exactly N x 64 KiB, which is
+  // reliable — but a single-address device is ambiguous (SCAN can't tell a
+  // 32 KiB SaveKey chip from a 64 KiB one, so device.capacityBytes just
+  // assumes the 64 KiB max), and using that would read/write twice the real
+  // chip: a 24LC256-class chip ignores address bit 15, so the upper "half"
+  // aliases onto the lower one. Use the size the app already resolved for
+  // that drive instead (32 KiB for a classic SaveKey — the exact size
+  // Stella/Gopher2600 expect for their EEPROM files too).
+  const backupSizeFor = (device: DetectedDevice) => {
+    if (device.addressCount > 1) return device.capacityBytes;
+    const drive = drives.find((item) => item.address === device.startAddress);
+    return drive?.totalBytes ?? guessCapacityKiB(device) * 1024;
+  };
+
   const exportBackup = async (device: DetectedDevice) => {
     const bridge = picoBridge.bridge;
     if (!bridge) return;
     const label = driveLabelForAddress(device.startAddress);
+    const size = backupSizeFor(device);
     try {
-      const bytes = await readDeviceBytes(bridge, device, 0, device.capacityBytes);
+      const bytes = await readDeviceBytes(bridge, device, 0, size);
       const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
       const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `${label}_eeprom_${formatSize(device.capacityBytes).replace(/\s/g, '')}.dat`;
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = `${label}_eeprom_${formatSize(size).replace(/\s/g, '')}.dat`;
       link.click();
-      URL.revokeObjectURL(link.href);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       pushActivity('Backup exported', `${label} · ${formatSize(bytes.length)}`);
     } catch (error) {
       pushActivity('Backup failed', error instanceof Error ? error.message : String(error));
@@ -965,10 +982,11 @@ function Home() {
     const bridge = picoBridge.bridge;
     if (!bridge || !restoreTarget || !restoreFile) return;
     const label = driveLabelForAddress(restoreTarget.startAddress);
+    const size = backupSizeFor(restoreTarget);
     const bytes = new Uint8Array(await restoreFile.arrayBuffer());
-    if (bytes.length !== restoreTarget.capacityBytes) {
+    if (bytes.length !== size) {
       setRestoreStatus('error');
-      setRestoreMessage(`Expected exactly ${formatSize(restoreTarget.capacityBytes)} (${restoreTarget.capacityBytes} bytes) — this file is ${formatSize(bytes.length)}.`);
+      setRestoreMessage(`Expected exactly ${formatSize(size)} (${size} bytes) — this file is ${formatSize(bytes.length)} (${bytes.length} bytes).`);
       return;
     }
     setRestoreStatus('running');
@@ -1676,8 +1694,8 @@ function Home() {
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="restore-dialog-title">
             <div className="modal-head">
               <div>
-                <h2 id="restore-dialog-title">Restore {activeDrive.label} from backup?</h2>
-                <p>Overwrites the entire {formatSize(activeDrive.totalBytes)} device with {restoreFile.name} — every file and page currently on it is replaced.</p>
+                <h2 id="restore-dialog-title">Restore {restoreTarget ? driveLabelForAddress(restoreTarget.startAddress) : 'device'} from backup?</h2>
+                <p>Overwrites the entire {restoreTarget ? formatSize(backupSizeFor(restoreTarget)) : ''} device with {restoreFile.name} — every file and page currently on it is replaced.</p>
               </div>
               <button className="modal-close" onClick={closeRestoreDialog} disabled={restoreStatus === 'running'} data-testid="button-close-restore-dialog">
                 <X size={17} />

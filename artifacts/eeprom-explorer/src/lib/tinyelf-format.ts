@@ -224,10 +224,16 @@ export function resolveDeviceAddress(device: DetectedDevice, byteOffset: number)
   return { addr: device.startAddress + blockIndex, memAddr: byteOffset % 0x10000 };
 }
 
+// The firmware's READ_MAX_LEN is 65535 — one byte short of a full 64 KiB
+// address block — so a read of exactly one whole block (e.g. a full-device
+// backup of a single-address chip) would be rejected with "ERR bad request"
+// if sent as one command. Cap each READ well below that instead.
+const READ_CHUNK_MAX_BYTES = 32768;
+
 // Reads `length` bytes starting at a flat logical byte offset within the
 // device, transparently splitting the read at 64 KiB address-block
 // boundaries if it crosses one (a single READ command can't span two I2C
-// addresses).
+// addresses), and at READ_CHUNK_MAX_BYTES within a block.
 export async function readDeviceBytes(
   bridge: PicoBridge,
   device: DetectedDevice,
@@ -239,7 +245,7 @@ export async function readDeviceBytes(
   let written = 0;
   while (written < length) {
     const { addr, memAddr } = resolveDeviceAddress(device, offset);
-    const chunk = Math.min(length - written, 0x10000 - memAddr);
+    const chunk = Math.min(length - written, 0x10000 - memAddr, READ_CHUNK_MAX_BYTES);
     const bytes = await bridge.read(addr, memAddr, chunk);
     result.set(bytes, written);
     offset += chunk;
