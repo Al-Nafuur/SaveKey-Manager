@@ -227,18 +227,22 @@ export function resolveDeviceAddress(device: DetectedDevice, byteOffset: number)
 // The firmware's READ_MAX_LEN is 65535 — one byte short of a full 64 KiB
 // address block — so a read of exactly one whole block (e.g. a full-device
 // backup of a single-address chip) would be rejected with "ERR bad request"
-// if sent as one command. Cap each READ well below that instead.
-const READ_CHUNK_MAX_BYTES = 32768;
+// if sent as one command. Cap each READ well below that instead — 4 KiB also
+// keeps progress reporting smooth on a big read (a full 256 KiB device is 64
+// steps rather than 8), at negligible per-command overhead.
+const READ_CHUNK_MAX_BYTES = 4096;
 
 // Reads `length` bytes starting at a flat logical byte offset within the
 // device, transparently splitting the read at 64 KiB address-block
 // boundaries if it crosses one (a single READ command can't span two I2C
-// addresses), and at READ_CHUNK_MAX_BYTES within a block.
+// addresses), and at READ_CHUNK_MAX_BYTES within a block. `onProgress` is
+// called after every chunk with (bytesDone, bytesTotal).
 export async function readDeviceBytes(
   bridge: PicoBridge,
   device: DetectedDevice,
   byteOffset: number,
   length: number,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<Uint8Array> {
   const result = new Uint8Array(length);
   let offset = byteOffset;
@@ -250,6 +254,7 @@ export async function readDeviceBytes(
     result.set(bytes, written);
     offset += chunk;
     written += chunk;
+    onProgress?.(written, length);
   }
   return result;
 }
@@ -271,6 +276,7 @@ export async function writeDeviceBytes(
   device: DetectedDevice,
   byteOffset: number,
   data: Uint8Array,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   let offset = byteOffset;
   let written = 0;
@@ -280,6 +286,7 @@ export async function writeDeviceBytes(
     await bridge.write(addr, memAddr, data.subarray(written, written + chunk));
     offset += chunk;
     written += chunk;
+    onProgress?.(written, data.length);
   }
 }
 

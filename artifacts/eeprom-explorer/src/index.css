@@ -310,6 +310,14 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .capacity-track { height:7px; margin:8px 0 6px; border:1px solid #7180c0; border-radius:0; background:#11163e; overflow:hidden; }
 .capacity-track span { display:block; width:31.7%; height:100%; background:linear-gradient(90deg,#ff7b00,#ffb000); }
 .device-row { display:grid; gap:8px; }
+.backup-progress { padding:2px 0 4px; }
+.backup-progress .capacity-track { margin:6px 0 5px; }
+.backup-progress .capacity-track span { transition:width .2s linear; }
+.progress-label { display:inline-flex; align-items:center; gap:6px; }
+.restore-progress { margin-top:12px; }
+.restore-progress .format-status { margin:0; }
+.progress-bar { height:9px; margin-top:8px; overflow:hidden; border:1px solid #59639a; background:#f8eac0; }
+.progress-bar span { display:block; height:100%; background:#ffb000; transition:width .2s linear; }
 .backup-actions { display:flex; gap:8px; }
 .backup-actions .action-button { flex:1; }
 .protect-line { display:flex; align-items:center; gap:7px; margin-top:12px; color:#a9d9d2; font:9px var(--app-font-mono); }

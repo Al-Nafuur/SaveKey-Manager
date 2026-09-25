@@ -377,6 +377,11 @@ function Home() {
   const [restoreStatus, setRestoreStatus] = useState<'idle' | 'running' | 'error'>('idle');
   const [restoreMessage, setRestoreMessage] = useState('');
   const restoreFileInputRef = useRef<HTMLInputElement>(null);
+  // Progress of a running Backup (which device, how many bytes so far) and
+  // of a running Restore — a full 256 KiB read/write takes tens of seconds
+  // over I2C, so without this the UI just looks frozen.
+  const [backupProgress, setBackupProgress] = useState<{ address: number; done: number; total: number } | null>(null);
+  const [restoreProgress, setRestoreProgress] = useState<{ done: number; total: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hexGutterRef = useRef<HTMLDivElement>(null);
@@ -923,11 +928,6 @@ function Home() {
     setDialog(null);
   };
 
-  // Whole-device raw backup: a flat, headerless dump of the drive's exact
-  // bytes — this is deliberately the same format Stella (savekey_eeprom.dat)
-  // and Gopher2600 use for their SaveKey/AtariVox EEPROM persistence (raw
-  // N-byte binary, no header/magic/checksum), so a backup taken here can be
-  // dropped straight into either emulator's save location and vice versa.
   // How many bytes a whole-device backup/restore covers for this device. A
   // device spanning several I2C addresses is exactly N x 64 KiB, which is
   // reliable — but a single-address device is ambiguous (SCAN can't tell a
@@ -943,13 +943,26 @@ function Home() {
     return drive?.totalBytes ?? guessCapacityKiB(device) * 1024;
   };
 
+  // Whole-device raw backup: a flat, headerless dump of the drive's exact
+  // bytes — this is deliberately the same format Stella (savekey_eeprom.dat)
+  // and Gopher2600 use for their SaveKey/AtariVox EEPROM persistence (raw
+  // N-byte binary, no header/magic/checksum), so a backup taken here can be
+  // dropped straight into either emulator's save location and vice versa.
   const exportBackup = async (device: DetectedDevice) => {
     const bridge = picoBridge.bridge;
-    if (!bridge) return;
+    if (!bridge || backupProgress) return;
     const label = driveLabelForAddress(device.startAddress);
     const size = backupSizeFor(device);
+    setBackupProgress({ address: device.startAddress, done: 0, total: size });
+    pushActivity('Backup started', `${label} · ${formatSize(size)}`);
+    let lastPercent = -1;
     try {
-      const bytes = await readDeviceBytes(bridge, device, 0, size);
+      const bytes = await readDeviceBytes(bridge, device, 0, size, (done, total) => {
+        const percent = Math.floor((done / total) * 100);
+        if (percent === lastPercent && done < total) return;
+        lastPercent = percent;
+        setBackupProgress({ address: device.startAddress, done, total });
+      });
       const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' });
       const link = document.createElement('a');
       const url = URL.createObjectURL(blob);
@@ -960,6 +973,8 @@ function Home() {
       pushActivity('Backup exported', `${label} · ${formatSize(bytes.length)}`);
     } catch (error) {
       pushActivity('Backup failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setBackupProgress(null);
     }
   };
 
@@ -990,9 +1005,16 @@ function Home() {
       return;
     }
     setRestoreStatus('running');
-    setRestoreMessage('Writing…');
+    setRestoreMessage('');
+    setRestoreProgress({ done: 0, total: bytes.length });
+    let lastPercent = -1;
     try {
-      await writeDeviceBytes(bridge, restoreTarget, 0, bytes);
+      await writeDeviceBytes(bridge, restoreTarget, 0, bytes, (done, total) => {
+        const percent = Math.floor((done / total) * 100);
+        if (percent === lastPercent && done < total) return;
+        lastPercent = percent;
+        setRestoreProgress({ done, total });
+      });
       pushActivity('Backup restored', `${label} · ${formatSize(bytes.length)}`);
       setDialog(null);
       setRestoreFile(null);
@@ -1001,6 +1023,8 @@ function Home() {
     } catch (error) {
       setRestoreStatus('error');
       setRestoreMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRestoreProgress(null);
     }
   };
 
@@ -1497,31 +1521,45 @@ function Home() {
                             <button
                               className="action-button"
                               onClick={() => openFormatDialog(device)}
+                              disabled={backupProgress !== null}
                               data-testid={`button-format-${hex(device.startAddress)}`}
                             >
                               <span>Format</span>
                             </button>
                           </div>
-                          <div className="backup-actions">
-                            <button
-                              className="action-button"
-                              onClick={() => void exportBackup(device)}
-                              title="Raw byte-for-byte dump — same format Stella/Gopher2600 use for SaveKey/AtariVox EEPROM saves"
-                              data-testid={`button-backup-${hex(device.startAddress)}`}
-                            >
-                              <Download size={14} /><span>Backup</span>
-                            </button>
-                            <button
-                              className="action-button"
-                              onClick={() => {
-                                setRestoreTarget(device);
-                                restoreFileInputRef.current?.click();
-                              }}
-                              data-testid={`button-restore-${hex(device.startAddress)}`}
-                            >
-                              <Upload size={14} /><span>Restore</span>
-                            </button>
-                          </div>
+                          {backupProgress?.address === device.startAddress ? (
+                            <div className="backup-progress" role="status" aria-live="polite" data-testid={`progress-backup-${hex(device.startAddress)}`}>
+                              <div className="capacity-line">
+                                <span className="progress-label"><RefreshCw size={12} className="animate-spin" />Reading…</span>
+                                <strong>{Math.floor((backupProgress.done / backupProgress.total) * 100)}%</strong>
+                              </div>
+                              <div className="capacity-track"><span style={{ width: `${(backupProgress.done / backupProgress.total) * 100}%` }} /></div>
+                              <div className="capacity-line"><span>{formatSize(backupProgress.done)} / {formatSize(backupProgress.total)}</span></div>
+                            </div>
+                          ) : (
+                            <div className="backup-actions">
+                              <button
+                                className="action-button"
+                                onClick={() => void exportBackup(device)}
+                                disabled={backupProgress !== null}
+                                title="Raw byte-for-byte dump — same format Stella/Gopher2600 use for SaveKey/AtariVox EEPROM saves"
+                                data-testid={`button-backup-${hex(device.startAddress)}`}
+                              >
+                                <Download size={14} /><span>Backup</span>
+                              </button>
+                              <button
+                                className="action-button"
+                                onClick={() => {
+                                  setRestoreTarget(device);
+                                  restoreFileInputRef.current?.click();
+                                }}
+                                disabled={backupProgress !== null}
+                                data-testid={`button-restore-${hex(device.startAddress)}`}
+                              >
+                                <Upload size={14} /><span>Restore</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
                       ))
                     )}
@@ -1703,7 +1741,14 @@ function Home() {
             </div>
             <div className="modal-body">
               {restoreStatus === 'error' && <div className="warning-copy">{restoreMessage}</div>}
-              {restoreStatus === 'running' && <p className="format-status">{restoreMessage}</p>}
+              {restoreStatus === 'running' && restoreProgress && (
+                <div className="restore-progress" role="status" aria-live="polite" data-testid="progress-restore">
+                  <p className="format-status">
+                    Writing… {Math.floor((restoreProgress.done / restoreProgress.total) * 100)}% · {formatSize(restoreProgress.done)} / {formatSize(restoreProgress.total)}
+                  </p>
+                  <div className="progress-bar"><span style={{ width: `${(restoreProgress.done / restoreProgress.total) * 100}%` }} /></div>
+                </div>
+              )}
               <div className="modal-actions">
                 <button className="action-button" onClick={closeRestoreDialog} disabled={restoreStatus === 'running'} data-testid="button-cancel-restore">Cancel</button>
                 <button className="action-button danger" onClick={() => void runRestore()} disabled={restoreStatus === 'running'} data-testid="button-confirm-restore">
