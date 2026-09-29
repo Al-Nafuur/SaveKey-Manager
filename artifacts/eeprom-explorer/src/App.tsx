@@ -1294,6 +1294,7 @@ function Home() {
            <button className="nav-item active" data-testid="nav-drive"><HardDrive size={16} /><span>Directory</span></button>
            <button className="nav-item" data-testid="nav-activity" onClick={() => document.getElementById('activity-log')?.scrollIntoView({ behavior: 'smooth' })}><Activity size={16} /><span>Activity log</span></button>
            <button className="nav-item" data-testid="nav-hardware" onClick={() => document.getElementById('hardware-status')?.scrollIntoView({ behavior: 'smooth' })}><Network size={16} /><span>Bus diagnostics</span></button>
+           <a className="nav-item" href={PROJECT_REPO_URL} target="_blank" rel="noopener noreferrer" data-testid="nav-docs"><ExternalLink size={16} /><span>Documentation</span></a>
         </nav>
         {!isDisconnected && (
           <div className="drive-list">
@@ -1379,13 +1380,11 @@ function Home() {
                   registry or the DOS 2.x-like TinyELF Basic filesystem on real hardware.
                 </p>
                 <div className="welcome-actions">
-                  <button className="action-button primary" onClick={() => void picoBridge.connect()} disabled={!picoBridge.isSupported} data-testid="button-connect-welcome">
-                    <Network size={14} /><span>Connect to PicoBridge</span>
-                  </button>
-                  <a className="action-button" href={PROJECT_REPO_URL} target="_blank" rel="noopener noreferrer" data-testid="link-project-docs">
+                  <a className="action-button primary" href={PROJECT_REPO_URL} target="_blank" rel="noopener noreferrer" data-testid="link-project-docs">
                     <ExternalLink size={14} /><span>View documentation</span>
                   </a>
                 </div>
+                <p className="welcome-hint">Use "Connect to PicoBridge" in the Live hardware panel to get started.</p>
                 {!picoBridge.isSupported && <p className="protect-line-light">Web Serial is not supported in this browser — use Chrome, Edge, or Firefox 151+.</p>}
               </div>
             </section>
@@ -1499,7 +1498,7 @@ function Home() {
           <aside className="right-rail">
             <section className="hardware-panel" data-testid="panel-pico-bridge">
               <div className="hardware-heading">
-                <div><h2>Live hardware</h2><p>PicoBridge (walking skeleton)</p></div>
+                <div><h2>Live hardware</h2><p>USB ↔ I²C bridge</p></div>
                 {picoBridge.status === 'connected' && <span className="connected-badge"><i /> connected</span>}
               </div>
               <div className="hardware-list">
