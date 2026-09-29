@@ -880,8 +880,9 @@ function Home() {
     }
 
     // No real hardware connected for this drive — fall back to the local
-    // demo-only behavior (works on the sample E1/E2 drives).
-    const rawName = pickedFile.name.toUpperCase();
+    // demo-only behavior (works on the sample E1/E2 drives). Case is kept as
+    // typed, matching the real SAVE path (see atariNameParts()).
+    const rawName = pickedFile.name;
     const extension = rawName.includes('.') ? rawName.split('.').pop() ?? 'BIN' : 'BIN';
     const file: TinyElfFile = {
       id: `file-${Date.now()}`,

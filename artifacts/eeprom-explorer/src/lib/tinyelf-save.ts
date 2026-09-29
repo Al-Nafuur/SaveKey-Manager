@@ -50,15 +50,19 @@ function findFreeSectors(vtoc: Uint8Array, layout: TinyElfLayout, count: number)
   return free;
 }
 
-// Splits "NAME.EXT" into Atari-style 8.3 parts, uppercased. Longer parts are
-// truncated (no error) — good enough for a first SAVE implementation.
+// Splits "NAME.EXT" into Atari-style 8.3 parts. Case is kept exactly as
+// typed/uploaded — TinyELF's name matching is case-sensitive (see
+// TinyELF-FS-SPEC.md), so forcing uppercase here would silently rename every
+// upload to something that doesn't match what the user typed on the Atari
+// side. Longer parts are truncated (no error) — good enough for a first SAVE
+// implementation.
 export function atariNameParts(filename: string): { name: string; extension: string } {
   const dot = filename.lastIndexOf('.');
   const rawName = dot === -1 ? filename : filename.slice(0, dot);
   const rawExt = dot === -1 ? '' : filename.slice(dot + 1);
   return {
-    name: rawName.toUpperCase().slice(0, 8),
-    extension: rawExt.toUpperCase().slice(0, 3),
+    name: rawName.slice(0, 8),
+    extension: rawExt.slice(0, 3),
   };
 }
 
