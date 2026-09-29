@@ -190,12 +190,6 @@ const initialTinyElfFiles: TinyElfFile[] = [
   },
 ];
 
-const initialActivity: ActivityRecord[] = [
-  { id: 1, time: '14:36:09', message: 'Drive mounted', detail: 'E1 at 0x50' },
-  { id: 2, time: '14:35:47', message: 'Integrity check complete', detail: 'No errors found' },
-  { id: 3, time: '14:35:42', message: 'Bus scan', detail: '2 devices responded' },
-];
-
 function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   return `${(bytes / 1024).toFixed(1)} KB`;
@@ -365,7 +359,10 @@ function Home() {
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'icons'>('list');
   const [previewMode, setPreviewMode] = useState<'preview' | 'hex'>('preview');
-  const [activity, setActivity] = useState(initialActivity);
+  // Starts empty rather than with canned demo entries — the log only ever
+  // shows things that actually happened (pushActivity() below), so an empty
+  // list is the honest state until the first real action.
+  const [activity, setActivity] = useState<ActivityRecord[]>([]);
   const [dialog, setDialog] = useState<'delete' | 'restore' | null>(null);
   // Which device Restore targets — set the moment its row's button is
   // clicked (before the file picker even opens), read again once a file is
@@ -1298,43 +1295,49 @@ function Home() {
            <button className="nav-item" data-testid="nav-activity" onClick={() => document.getElementById('activity-log')?.scrollIntoView({ behavior: 'smooth' })}><Activity size={16} /><span>Activity log</span></button>
            <button className="nav-item" data-testid="nav-hardware" onClick={() => document.getElementById('hardware-status')?.scrollIntoView({ behavior: 'smooth' })}><Network size={16} /><span>Bus diagnostics</span></button>
         </nav>
-        <div className="drive-list">
-          {drives.map((drive) => {
-            const driveUsed = driveUsedBytes(drive, files, systemOverheadBytes(drive.id), liveSaveKeyPages[drive.id]);
-            return (
-              <div className={`drive-card ${drive.id === activeDriveId ? 'active' : ''}`} key={drive.id} onClick={() => selectDrive(drive.id)} data-testid={`card-drive-${drive.id}`}>
-                <div className="drive-mini-head">
-                  <strong>{drive.label}</strong>
-                  {drive.id === activeDriveId && <button className="eject-btn" title="Refresh drive" onClick={refreshDrive} data-testid={`button-refresh-${drive.id}`}><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /></button>}
-                </div>
-                <div className="meter-label"><span>used space</span><b>{formatSize(driveUsed)} / {formatSize(drive.totalBytes)}</b></div>
-                <div className="meter-track"><div className="meter-fill" style={{ width: `${Math.min(100, (driveUsed / drive.totalBytes) * 100)}%` }} /></div>
-                <div className="mini-meta">I²C · {hex(drive.address)}</div>
-                {drive.canChangeMode ? (
-                  <div className="view-switch mode-toggle" role="group" aria-label={`${drive.label} format`}>
-                    <button className={drive.mode === 'savekey' ? 'selected' : ''} onClick={() => setDriveMode(drive.id, 'savekey')} data-testid={`button-mode-savekey-${drive.id}`}>SaveKey</button>
-                    <button className={drive.mode === 'tinyelf-fs' ? 'selected' : ''} onClick={() => setDriveMode(drive.id, 'tinyelf-fs')} data-testid={`button-mode-tinyelf-${drive.id}`}>TinyELF</button>
+        {!isDisconnected && (
+          <div className="drive-list">
+            {drives.map((drive) => {
+              const driveUsed = driveUsedBytes(drive, files, systemOverheadBytes(drive.id), liveSaveKeyPages[drive.id]);
+              return (
+                <div className={`drive-card ${drive.id === activeDriveId ? 'active' : ''}`} key={drive.id} onClick={() => selectDrive(drive.id)} data-testid={`card-drive-${drive.id}`}>
+                  <div className="drive-mini-head">
+                    <strong>{drive.label}</strong>
+                    {drive.id === activeDriveId && <button className="eject-btn" title="Refresh drive" onClick={refreshDrive} data-testid={`button-refresh-${drive.id}`}><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /></button>}
                   </div>
-                ) : (
-                  <div className="mode-static">TinyELF Basic</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-         <div className="side-footer"><span><i className="online-dot" />ready</span><span>local mode</span></div>
+                  <div className="meter-label"><span>used space</span><b>{formatSize(driveUsed)} / {formatSize(drive.totalBytes)}</b></div>
+                  <div className="meter-track"><div className="meter-fill" style={{ width: `${Math.min(100, (driveUsed / drive.totalBytes) * 100)}%` }} /></div>
+                  <div className="mini-meta">I²C · {hex(drive.address)}</div>
+                  {drive.canChangeMode ? (
+                    <div className="view-switch mode-toggle" role="group" aria-label={`${drive.label} format`}>
+                      <button className={drive.mode === 'savekey' ? 'selected' : ''} onClick={() => setDriveMode(drive.id, 'savekey')} data-testid={`button-mode-savekey-${drive.id}`}>SaveKey</button>
+                      <button className={drive.mode === 'tinyelf-fs' ? 'selected' : ''} onClick={() => setDriveMode(drive.id, 'tinyelf-fs')} data-testid={`button-mode-tinyelf-${drive.id}`}>TinyELF</button>
+                    </div>
+                  ) : (
+                    <div className="mode-static">TinyELF Basic</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {!isDisconnected && (
+          <div className="side-footer"><span><i className="online-dot" />ready</span><span>connected</span></div>
+        )}
       </aside>
 
       <main className="console-main">
         <header className="topbar">
           <div>
              <div className="topbar-kicker">chapter 03 / directory control</div>
-             <h1 className="topbar-title">{isSaveKeyView ? 'Allocation registry' : 'Disk directory'}</h1>
+             <h1 className="topbar-title">{isDisconnected ? 'SaveKey-Manager' : isSaveKeyView ? 'Allocation registry' : 'Disk directory'}</h1>
           </div>
-          <div className="topbar-actions">
-             <div className="hardware-chip"><i className="online-dot" /> bus online · {hex(activeDrive.address)}</div>
-            <button className="action-button" onClick={refreshDrive} data-testid="button-refresh-drive" title={isSaveKeyView ? 'Re-read the allocation list' : 'Read the directory again'}><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /><span>Refresh</span></button>
-          </div>
+          {!isDisconnected && (
+            <div className="topbar-actions">
+               <div className="hardware-chip"><i className="online-dot" /> bus online · {hex(activeDrive.address)}</div>
+              <button className="action-button" onClick={refreshDrive} data-testid="button-refresh-drive" title={isSaveKeyView ? 'Re-read the allocation list' : 'Read the directory again'}><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /><span>Refresh</span></button>
+            </div>
+          )}
         </header>
 
         {!isDisconnected && (isSaveKeyView ? (
@@ -1594,32 +1597,34 @@ function Home() {
               </div>
             </section>
 
-            <section className="hardware-panel" id="hardware-status" data-testid="panel-hardware-status">
-               <div className="hardware-heading"><div><h2>Bus diagnostics</h2><p>live I²C telemetry</p></div><span className="connected-badge"><i /> online</span></div>
-              <div className="hardware-list">
-                <div className="hardware-stat"><span>Bus address</span><strong>{hex(activeDrive.address)}</strong></div>
-                <div className="hardware-stat"><span>Device type</span><strong>{chipLabel(activeDrive)}</strong></div>
-                <div className="hardware-stat"><span>Capacity</span><strong>{formatSize(activeDrive.totalBytes)}</strong></div>
-                <div className="hardware-stat"><span>Write protect</span><strong className="good">enabled</strong></div>
-                <div className="capacity-block">
-                  <div className="capacity-line"><span>used / free</span><strong>{formatSize(usedBytes)} / {formatSize(activeDrive.totalBytes - usedBytes)}</strong></div>
-                  <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
-                  <div className="capacity-line"><span>{isSaveKeyView ? 'pages with data' : 'directory entries'}</span><strong>{isSaveKeyView ? `${isRealSaveKeyDrive ? activeSaveKeyPages!.filter(Boolean).length : DEMO_PAGES_WITH_DATA.size} of ${activeTotalPages} pages` : `${driveFiles.length} files`}</strong></div>
+            {!isDisconnected && (
+              <section className="hardware-panel" id="hardware-status" data-testid="panel-hardware-status">
+                 <div className="hardware-heading"><div><h2>Bus diagnostics</h2><p>live I²C telemetry</p></div><span className="connected-badge"><i /> online</span></div>
+                <div className="hardware-list">
+                  <div className="hardware-stat"><span>Bus address</span><strong>{hex(activeDrive.address)}</strong></div>
+                  <div className="hardware-stat"><span>Device type</span><strong>{chipLabel(activeDrive)}</strong></div>
+                  <div className="hardware-stat"><span>Capacity</span><strong>{formatSize(activeDrive.totalBytes)}</strong></div>
+                  <div className="hardware-stat"><span>Write protect</span><strong className="good">enabled</strong></div>
+                  <div className="capacity-block">
+                    <div className="capacity-line"><span>used / free</span><strong>{formatSize(usedBytes)} / {formatSize(activeDrive.totalBytes - usedBytes)}</strong></div>
+                    <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
+                    <div className="capacity-line"><span>{isSaveKeyView ? 'pages with data' : 'directory entries'}</span><strong>{isSaveKeyView ? `${isRealSaveKeyDrive ? activeSaveKeyPages!.filter(Boolean).length : DEMO_PAGES_WITH_DATA.size} of ${activeTotalPages} pages` : `${driveFiles.length} files`}</strong></div>
+                  </div>
+                  {!isSaveKeyView && (() => {
+                    const layout = tinyElfLayout(activeDrive);
+                    return (
+                      <div className="capacity-block" title="Derived from the TinyELF FS design draft — sector-size cutoff and directory sizing are still open there">
+                        <div className="capacity-line"><span>TinyELF FS sectors</span><strong>{layout.totalSectors} × {layout.sectorSize} B</strong></div>
+                        <div className="capacity-line"><span>sector data</span><strong>{layout.dataPerSector} B (3 B chain/ctrl)</strong></div>
+                        <div className="capacity-line"><span>directory</span><strong>{layout.directorySectors} sectors · {layout.maxFiles} files max</strong></div>
+                        <div className="capacity-line"><span>fs overhead</span><strong>{formatSize(layout.overheadBytes)} ({layout.overheadPercent.toFixed(1)}%)</strong></div>
+                      </div>
+                    );
+                  })()}
+                  <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
                 </div>
-                {!isSaveKeyView && (() => {
-                  const layout = tinyElfLayout(activeDrive);
-                  return (
-                    <div className="capacity-block" title="Derived from the TinyELF FS design draft — sector-size cutoff and directory sizing are still open there">
-                      <div className="capacity-line"><span>TinyELF FS sectors</span><strong>{layout.totalSectors} × {layout.sectorSize} B</strong></div>
-                      <div className="capacity-line"><span>sector data</span><strong>{layout.dataPerSector} B (3 B chain/ctrl)</strong></div>
-                      <div className="capacity-line"><span>directory</span><strong>{layout.directorySectors} sectors · {layout.maxFiles} files max</strong></div>
-                      <div className="capacity-line"><span>fs overhead</span><strong>{formatSize(layout.overheadBytes)} ({layout.overheadPercent.toFixed(1)}%)</strong></div>
-                    </div>
-                  );
-                })()}
-                <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
-              </div>
-            </section>
+              </section>
+            )}
 
             <section className="activity-panel" id="activity-log" data-testid="panel-activity-log">
                <div className="activity-title"><Activity size={14} /><strong>Operations log</strong></div>
