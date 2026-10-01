@@ -395,11 +395,21 @@ button.page-cell:hover { border-color:#2f3b7c; }
 
 .modal-backdrop { position:fixed; inset:0; display:grid; place-items:center; padding:20px; background:rgba(18,22,63,.72); z-index:30; animation:fadeIn .18s ease both; }
 .modal { width:min(100%, 420px); border:2px solid #343b79; border-radius:1px; background:#f0dfad; box-shadow:6px 6px 0 rgba(14,17,53,.34); animation:modalIn .2s ease both; }
+.modal-wide { width:min(100%, 560px); }
 .modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:15px; padding:18px; border-bottom:2px solid #56619a; }
 .modal-head h2 { margin:0; color:#20234d; font-size:15px; text-transform:uppercase; }
 .modal-head p { margin:5px 0 0; color:#53608e; font:10px/1.5 var(--app-font-mono); }
+.modal-head p a { color:#1c4fae; text-decoration:underline; }
 .modal-close { border:0; color:#3e487c; background:transparent; padding:2px; }
 .modal-body { padding:18px; }
+.modal-wide .modal-body { max-height:60vh; overflow-y:auto; }
+.example-library { display:grid; gap:16px; }
+.example-folder-name { margin-bottom:6px; color:#53608e; font:10px var(--app-font-mono); text-transform:uppercase; letter-spacing:.08em; }
+.example-folder { display:grid; gap:6px; }
+.example-file { width:100%; display:flex; align-items:center; gap:9px; padding:9px 11px; border:1px solid #59639a; border-radius:1px; color:#20234d; background:rgba(248,234,192,.6); text-align:left; font:11px var(--app-font-mono); transition:background .14s ease, border-color .14s ease; }
+.example-file:hover { background:#fff0bd; border-color:#2f3b7c; }
+.example-file-name { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.example-file-size { color:#756b56; font-size:9px; }
 .modal-body label { display:block; margin-bottom:7px; color:#3e487c; font:10px var(--app-font-mono); text-transform:uppercase; letter-spacing:.1em; }
 .modal-input { width:100%; height:38px; padding:0 10px; border:1px solid #59639a; border-radius:1px; color:#20234d; background:#f8eac0; font:11px var(--app-font-mono); }
 .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }

@@ -4,6 +4,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import {
   Activity,
   Archive,
+  BookOpen,
   Download,
   ExternalLink,
   FileCode2,
@@ -32,6 +33,7 @@ import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
 import { computeTinyElfLayout, formatDevice, readDeviceBytes, readTinyElfHeader, writeDeviceBytes, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
 import { loadFileContent, overwriteFileContent, saveFile } from '@/lib/tinyelf-save';
+import { EXAMPLES_REPO_URL, fetchExampleFile, fetchExampleLibrary, type ExampleFile, type ExampleFolder } from '@/lib/tinyelf-examples';
 import {
   buildPageOwners,
   fetchSaveKeyRegistry,
@@ -363,7 +365,11 @@ function Home() {
   // shows things that actually happened (pushActivity() below), so an empty
   // list is the honest state until the first real action.
   const [activity, setActivity] = useState<ActivityRecord[]>([]);
-  const [dialog, setDialog] = useState<'delete' | 'restore' | null>(null);
+  const [dialog, setDialog] = useState<'delete' | 'restore' | 'examples' | null>(null);
+  const [exampleLibrary, setExampleLibrary] = useState<ExampleFolder[] | null>(null);
+  const [exampleLibraryStatus, setExampleLibraryStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
+  const [exampleLibraryMessage, setExampleLibraryMessage] = useState('');
+  const [exampleUploadingPath, setExampleUploadingPath] = useState<string | null>(null);
   // Which device Restore targets — set the moment its row's button is
   // clicked (before the file picker even opens), read again once a file is
   // actually chosen. One hidden file input is shared across all device
@@ -899,6 +905,41 @@ function Home() {
     pushActivity('File imported', `${file.name} · ${formatSize(file.size)}`);
   };
 
+  const openExamplesDialog = () => {
+    setDialog('examples');
+    if (exampleLibraryStatus === 'idle' || exampleLibraryStatus === 'error') {
+      setExampleLibraryStatus('loading');
+      setExampleLibraryMessage('');
+      fetchExampleLibrary()
+        .then((folders) => {
+          setExampleLibrary(folders);
+          setExampleLibraryStatus('loaded');
+        })
+        .catch((error) => {
+          setExampleLibraryStatus('error');
+          setExampleLibraryMessage(error instanceof Error ? error.message : String(error));
+        });
+    }
+  };
+
+  // Fetches one example's content from GitHub and runs it through the exact
+  // same upload path as a locally picked file (importFile() doesn't care
+  // where the File object came from), so it gets the same real-hardware
+  // SAVE / case-preserving / locked-drive handling as any other upload.
+  const importExampleFile = async (example: ExampleFile) => {
+    setExampleUploadingPath(example.path);
+    try {
+      const bytes = await fetchExampleFile(example.path);
+      const file = new File([new Uint8Array(bytes)], example.name, { type: 'application/octet-stream' });
+      await importFile(file);
+      setDialog(null);
+    } catch (error) {
+      pushActivity('Save failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setExampleUploadingPath(null);
+    }
+  };
+
   const exportFile = () => {
     if (!selectedFile) return;
     const blob = new Blob([new Uint8Array(selectedFile.bytes)], { type: 'application/octet-stream' });
@@ -1352,6 +1393,7 @@ function Home() {
           <section className="toolbar" aria-label="File actions">
              <button className="action-button" onClick={() => fileInputRef.current?.click()} data-testid="button-import"><Upload size={14} /><span>Read into disk</span></button>
             <input ref={fileInputRef} type="file" hidden onChange={(event) => { const picked = event.target.files?.[0]; if (picked) void importFile(picked); event.target.value = ''; }} data-testid="input-file-import" />
+             <button className="action-button" onClick={openExamplesDialog} data-testid="button-browse-examples"><BookOpen size={14} /><span>Browse examples</span></button>
              <button className="action-button" disabled={!selectedFile} onClick={exportFile} data-testid="button-export"><Download size={14} /><span>Write out</span></button>
              <button className="action-button danger" disabled={!selectedFile} onClick={() => setDialog('delete')} data-testid="button-delete"><Trash2 size={14} /><span>Erase</span></button>
             <div className="tool-divider" />
@@ -1760,6 +1802,56 @@ function Home() {
                   {restoreStatus === 'running' ? 'Restoring…' : 'Overwrite device'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dialog === 'examples' && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}>
+          <div className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="examples-dialog-title">
+            <div className="modal-head">
+              <div>
+                <h2 id="examples-dialog-title">Browse example programs</h2>
+                <p>
+                  From the <a href={EXAMPLES_REPO_URL} target="_blank" rel="noopener noreferrer">TinyELF Basic examples library</a> — picking
+                  one uploads it to {activeDrive.label} the same way a local file would.
+                </p>
+              </div>
+              <button className="modal-close" onClick={() => setDialog(null)} data-testid="button-close-examples-dialog">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {exampleLibraryStatus === 'loading' && <p className="format-status">Loading…</p>}
+              {exampleLibraryStatus === 'error' && <div className="warning-copy">{exampleLibraryMessage}</div>}
+              {exampleLibraryStatus === 'loaded' && exampleLibrary && (
+                exampleLibrary.length === 0 ? (
+                  <p className="format-status">No example files found.</p>
+                ) : (
+                  <div className="example-library">
+                    {exampleLibrary.map((folder) => (
+                      <div className="example-folder" key={folder.name}>
+                        <div className="example-folder-name">{folder.name}</div>
+                        {folder.files.map((file) => (
+                          <button
+                            key={file.path}
+                            className="example-file"
+                            onClick={() => void importExampleFile(file)}
+                            disabled={exampleUploadingPath !== null}
+                            data-testid={`button-example-${file.path}`}
+                          >
+                            <FileText size={14} className="file-icon" />
+                            <span className="example-file-name">{file.name}</span>
+                            <span className="example-file-size">{formatSize(file.size)}</span>
+                            {exampleUploadingPath === file.path && <RefreshCw size={13} className="animate-spin" />}
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
             </div>
           </div>
         </div>
