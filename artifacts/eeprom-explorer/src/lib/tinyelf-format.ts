@@ -47,7 +47,8 @@
 //   $22-$23  directory start sector
 //   $24-$25  directory size in sectors
 
-import type { DetectedDevice, PicoBridge } from './pico-bridge';
+import type { DetectedDevice } from './pico-bridge';
+import type { EepromBus } from './eeprom-bus';
 
 export type TinyElfLayout = {
   sectorSize: number;
@@ -218,7 +219,7 @@ export function decodeSectorControl(byte0: number, byte1: number, byte2: number)
 // A device can span several consecutive I2C addresses (per the SaveKey
 // hardware notes: one 64 KiB block per address) — translate a flat logical
 // byte offset within the device into the (i2c address, 16-bit mem address)
-// pair PicoBridge actually talks in.
+// pair the bus (PicoBridge, or an EepromImage) actually talks in.
 export function resolveDeviceAddress(device: DetectedDevice, byteOffset: number): { addr: number; memAddr: number } {
   const blockIndex = Math.floor(byteOffset / 0x10000);
   return { addr: device.startAddress + blockIndex, memAddr: byteOffset % 0x10000 };
@@ -238,7 +239,7 @@ const READ_CHUNK_MAX_BYTES = 4096;
 // addresses), and at READ_CHUNK_MAX_BYTES within a block. `onProgress` is
 // called after every chunk with (bytesDone, bytesTotal).
 export async function readDeviceBytes(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   byteOffset: number,
   length: number,
@@ -272,7 +273,7 @@ export async function readDeviceBytes(
 const RAW_WRITE_CHUNK_BYTES = 64;
 
 export async function writeDeviceBytes(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   byteOffset: number,
   data: Uint8Array,
@@ -290,13 +291,13 @@ export async function writeDeviceBytes(
   }
 }
 
-export async function readTinyElfHeader(bridge: PicoBridge, device: DetectedDevice): Promise<TinyElfLayout | null> {
+export async function readTinyElfHeader(bridge: EepromBus, device: DetectedDevice): Promise<TinyElfLayout | null> {
   const bytes = await readDeviceBytes(bridge, device, 0, TINYELF_FIELDS_OFFSET + FS_MAGIC.length + 2 + 8);
   return parseHeaderSector(bytes);
 }
 
 export async function writeSectors(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   startSector: number,
   data: Uint8Array,
@@ -315,7 +316,7 @@ export async function writeSectors(
 // is left completely untouched (wear-leveling: don't write sectors that
 // don't need to change).
 export async function formatDevice(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   totalBytes: number,
   onProgress?: (message: string) => void,

@@ -305,6 +305,10 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .hardware-stat { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#9cb8d0; font:10px var(--app-font-mono); }
 .hardware-stat strong { color:#f5e5ac; font-weight:500; text-align:right; }
 .hardware-stat strong.good { color:#73e1d5; }
+/* Emulator file names can be long; let them shrink with an ellipsis instead
+   of pushing the size/Format button out of the row. */
+.hardware-stat .truncate { min-width:0; flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.protect-line.image-hint { display:block; margin-top:2px; line-height:1.5; }
 .capacity-block { margin-top:2px; padding-top:11px; border-top:1px solid #4c5a9c; }
 .capacity-line { display:flex; justify-content:space-between; color:#adc2cf; font:9px var(--app-font-mono); }
 .capacity-line strong { color:#ffdd77; font-weight:500; }

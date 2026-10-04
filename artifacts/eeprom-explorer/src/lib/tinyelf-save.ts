@@ -4,7 +4,8 @@
 // containing the new entry, and the newly-allocated (previously free) data
 // sectors — never rewrites unrelated sectors.
 
-import type { DetectedDevice, PicoBridge } from './pico-bridge';
+import type { DetectedDevice } from './pico-bridge';
+import type { EepromBus } from './eeprom-bus';
 import {
   SECTOR_CONTROL_BYTES,
   SECTOR_LINK_NONE,
@@ -91,7 +92,7 @@ export type SavedFile = {
 };
 
 export async function saveFile(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   layout: TinyElfLayout,
   filename: string,
@@ -165,7 +166,7 @@ export type OverwrittenFile = { startSector: number; sectorCount: number };
 // one directory sector, and the sectors that are part of the new content
 // get written.
 export async function overwriteFileContent(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   layout: TinyElfLayout,
   entry: Pick<DirectoryEntry, 'slot' | 'startSector'>,
@@ -237,7 +238,7 @@ export async function overwriteFileContent(
 // but reads just the 3 trailing control bytes per sector instead of the
 // whole sector, since only bytesUsed/nextSector are needed here.
 export async function computeExactFileSize(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   layout: TinyElfLayout,
   startSector: number,
@@ -270,7 +271,7 @@ export async function computeExactFileSize(
 // where the real content ends and where to go next — LOAD's counterpart to
 // SAVE's chain-writing above.
 export async function loadFileContent(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   layout: TinyElfLayout,
   startSector: number,

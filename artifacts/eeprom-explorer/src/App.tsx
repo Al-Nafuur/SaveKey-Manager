@@ -8,8 +8,10 @@ import {
   Download,
   ExternalLink,
   FileCode2,
+  FilePlus,
   FileCog,
   FileText,
+  FolderOpen,
   HardDrive,
   Hexagon,
   LayoutGrid,
@@ -18,6 +20,7 @@ import {
   MoreHorizontal,
   Network,
   RefreshCw,
+  Save,
   Search,
   ShieldCheck,
   Trash2,
@@ -29,7 +32,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import NotFound from '@/pages/not-found';
 import { usePicoBridge } from '@/hooks/use-pico-bridge';
-import type { DetectedDevice, PicoBridge } from '@/lib/pico-bridge';
+import type { DetectedDevice } from '@/lib/pico-bridge';
+import { EepromImage, IMAGE_SIZES, isSupportedImageSize, type EepromBus } from '@/lib/eeprom-bus';
 import { computeTinyElfLayout, formatDevice, readDeviceBytes, readTinyElfHeader, writeDeviceBytes, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
 import { loadFileContent, overwriteFileContent, saveFile } from '@/lib/tinyelf-save';
@@ -50,6 +54,9 @@ type Drive = {
   totalBytes: number;
   mode: DriveMode;
   canChangeMode: boolean;
+  // Set for a drive backed by an opened emulator EEPROM file instead of
+  // real hardware — shown in place of its (meaningless) bus address.
+  fileName?: string;
 };
 type TinyElfFile = {
   id: string;
@@ -66,6 +73,15 @@ type TinyElfFile = {
   // Real files only: directory slot index, needed to overwrite this file's
   // content in place (see overwriteFileContent()) without touching its name.
   slot?: number;
+};
+type LiveTinyElfDrive = { device: DetectedDevice; layout: TinyElfLayout; bus: EepromBus };
+type LiveSaveKeyDrive = { device: DetectedDevice; pageSize: number; bus: EepromBus };
+type LiveData = {
+  realDrives: Drive[];
+  realFiles: TinyElfFile[];
+  layouts: Record<string, LiveTinyElfDrive>;
+  savekeyPages: Record<string, boolean[]>;
+  savekeyDevices: Record<string, LiveSaveKeyDrive>;
 };
 type ActivityRecord = { id: number; time: string; message: string; detail?: string };
 // Shared shape for both the demo allocation entries below and the real
@@ -96,6 +112,20 @@ function guessCapacityKiB(device: DetectedDevice): number {
 function driveLabelForAddress(address: number): string {
   return `E${address - 0x50 + 1}`;
 }
+
+// The drive an opened emulator file shows up as — deliberately not an E-number,
+// so it can sit next to real hardware drives (an image also claims 0x50
+// internally, which would otherwise collide with a real E1).
+const IMAGE_DRIVE_ID = 'IMG';
+
+function driveLocation(drive: { fileName?: string; address: number }): string {
+  return drive.fileName ?? `I²C · ${hex(drive.address)}`;
+}
+
+// What FORMAT runs against: a hardware device behind the PicoBridge, or the
+// opened emulator file. `maxBytes` caps the capacity choices for a file,
+// which can't grow past its real size the way a mis-guessed chip size can.
+type FormatTarget = { device: DetectedDevice; bus: EepromBus; label: string; isImage: boolean; maxBytes: number };
 
 const initialDrives: Drive[] = [
   { id: 'E1', label: 'E1', address: 0x50, totalBytes: 32 * 1024, mode: 'savekey', canChangeMode: true },
@@ -306,6 +336,7 @@ function fileIcon(extension: string) {
 }
 
 function chipLabel(drive: Drive) {
+  if (drive.fileName) return `Emulator file (${formatSize(drive.totalBytes)})`;
   if (drive.id === 'E1') return '24LC256 (32 KB)';
   return `64 KB block · 2nd EEPROM (${hex(drive.address)})`;
 }
@@ -389,15 +420,32 @@ function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hexGutterRef = useRef<HTMLDivElement>(null);
   const picoBridge = usePicoBridge();
-  const [formatTarget, setFormatTarget] = useState<DetectedDevice | null>(null);
+  const [formatTarget, setFormatTarget] = useState<FormatTarget | null>(null);
   const [formatFilesystem, setFormatFilesystem] = useState<'tinyelf' | 'savekey'>('tinyelf');
   const [formatCapacityKiB, setFormatCapacityKiB] = useState(32);
   const [formatTvMode, setFormatTvMode] = useState<SaveKeyTvMode>('ntsc60');
   const [formatStatus, setFormatStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [formatMessage, setFormatMessage] = useState('');
-  const [liveDrives, setLiveDrives] = useState<Record<string, { device: DetectedDevice; layout: TinyElfLayout }>>({});
+  // Each live drive carries the bus it lives on — the PicoBridge for real
+  // hardware, or the EepromImage for an opened emulator file — so every read
+  // and write below goes to the right place without caring which it is.
+  const [liveDrives, setLiveDrives] = useState<Record<string, LiveTinyElfDrive>>({});
   const [liveSaveKeyPages, setLiveSaveKeyPages] = useState<Record<string, boolean[]>>({});
-  const [liveSaveKeyDevices, setLiveSaveKeyDevices] = useState<Record<string, { device: DetectedDevice; pageSize: number }>>({});
+  const [liveSaveKeyDevices, setLiveSaveKeyDevices] = useState<Record<string, LiveSaveKeyDrive>>({});
+  // An opened emulator EEPROM file (Stella savekey_eeprom.dat, Gopher2600
+  // savekey.dat, or one of this app's own Backups). Always opened through a
+  // plain file input and saved as a download: Chrome's File System Access
+  // picker refuses AppData ("contains system files"), which is exactly where
+  // both emulators keep these files on Windows, so in-place save can't work
+  // for the case this exists for.
+  const [image, setImage] = useState<{ bus: EepromImage } | null>(null);
+  // EepromImage.dirty is a plain field mutated by writes; bumping this makes
+  // a change to it (e.g. cleared by Save) show up even when nothing else
+  // re-rendered.
+  const [, setImageTick] = useState(0);
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
+  // Drive to switch to once the next reload lands (set when a file is opened).
+  const preferDriveRef = useRef<string | null>(null);
   const [selectedAllocationBytes, setSelectedAllocationBytes] = useState<number[] | null>(null);
   const [allocationHexDraft, setAllocationHexDraft] = useState('');
   const [allocationWriteStatus, setAllocationWriteStatus] = useState<'idle' | 'writing' | 'error'>('idle');
@@ -419,6 +467,9 @@ function Home() {
 
   const activeDrive = drives.find((drive) => drive.id === activeDriveId) ?? drives[0];
   const isSaveKeyView = activeDrive.mode === 'savekey';
+  const hardwareConnected = picoBridge.status === 'connected' && picoBridge.bridge !== null;
+  // Anything real to work on — hardware, an opened emulator file, or both.
+  const hasSource = hardwareConnected || image !== null;
   const selectedFile = files.find((file) => file.id === selectedFileId) ?? null;
 
   // A real connected classic-format drive uses the live community registry
@@ -459,13 +510,15 @@ function Home() {
     setActivity((items) => [{ id: Date.now(), time: nowTime(), message, detail }, ...items].slice(0, 7));
   };
 
-  const openFormatDialog = (device: DetectedDevice) => {
-    const guessedCapacity = guessCapacityKiB(device);
-    setFormatTarget(device);
+  const openFormatDialog = (target: FormatTarget) => {
+    // A file's size is exact; a lone hardware address can only be guessed.
+    const guessedCapacity = target.isImage ? target.maxBytes / 1024 : guessCapacityKiB(target.device);
+    setFormatTarget(target);
     setFormatCapacityKiB(guessedCapacity);
-    // A single-address, 32 KiB-guessed device is most likely a plain
-    // SaveKey/AtariVox EEPROM — default to that format, TinyELF otherwise.
-    setFormatFilesystem(device.addressCount === 1 && guessedCapacity === 32 ? 'savekey' : 'tinyelf');
+    // A single-address, 32 KiB device is most likely a plain SaveKey/AtariVox
+    // EEPROM (and exactly what an emulator file is) — default to that format,
+    // TinyELF otherwise.
+    setFormatFilesystem(target.device.addressCount === 1 && guessedCapacity === 32 ? 'savekey' : 'tinyelf');
     setFormatTvMode('ntsc60');
     setFormatStatus('idle');
     setFormatMessage('');
@@ -477,21 +530,29 @@ function Home() {
   };
 
   const runFormat = async () => {
-    const bridge = picoBridge.bridge;
-    if (!formatTarget || !bridge) return;
+    if (!formatTarget) return;
+    const { bus, device, label } = formatTarget;
+    if (formatTarget.isImage && formatCapacityKiB * 1024 > formatTarget.maxBytes) {
+      setFormatStatus('error');
+      setFormatMessage(`This file is only ${formatSize(formatTarget.maxBytes)}.`);
+      return;
+    }
     setFormatStatus('running');
     try {
       if (formatFilesystem === 'savekey') {
         const pageSize = saveKeyRegistry?.pageSize ?? 64;
-        await formatSaveKeyDevice(bridge, formatTarget, pageSize, formatTvMode, setFormatMessage);
+        await formatSaveKeyDevice(bus, device, pageSize, formatTvMode, setFormatMessage);
         setFormatStatus('done');
-        pushActivity('Device formatted', `${hex(formatTarget.startAddress)} · SaveKey system block`);
+        pushActivity('Device formatted', `${label} · SaveKey system block`);
       } else {
-        await formatDevice(bridge, formatTarget, formatCapacityKiB * 1024, setFormatMessage);
+        await formatDevice(bus, device, formatCapacityKiB * 1024, setFormatMessage);
         setFormatStatus('done');
-        pushActivity('Device formatted', `${hex(formatTarget.startAddress)} · ${formatCapacityKiB} KiB`);
+        pushActivity('Device formatted', `${label} · ${formatCapacityKiB} KiB`);
       }
-      await picoBridge.rescan();
+      // Hardware: a rescan re-reads every device (via the effect below). A
+      // file has nothing to rescan — just reload what's on it.
+      if (formatTarget.isImage) await reloadSources();
+      else await picoBridge.rescan();
     } catch (error) {
       setFormatStatus('error');
       setFormatMessage(error instanceof Error ? error.message : String(error));
@@ -504,14 +565,20 @@ function Home() {
   // once real hardware is present. Reverts to the demo data on disconnect.
   // Exposed as a function (not just inline in the effect) so a real SAVE
   // can trigger a re-read of just-changed drives afterwards.
-  const loadLiveData = useCallback(async (bridge: PicoBridge, devices: DetectedDevice[], registry: SaveKeyRegistry | null) => {
+  const loadLiveData = useCallback(async (
+    bridge: EepromBus,
+    devices: DetectedDevice[],
+    registry: SaveKeyRegistry | null,
+    idFor: (device: DetectedDevice) => string,
+    fileName?: string,
+  ): Promise<LiveData> => {
     const realDrives: Drive[] = [];
     const realFiles: TinyElfFile[] = [];
-    const layouts: Record<string, { device: DetectedDevice; layout: TinyElfLayout }> = {};
+    const layouts: Record<string, LiveTinyElfDrive> = {};
     const savekeyPages: Record<string, boolean[]> = {};
-    const savekeyDevices: Record<string, { device: DetectedDevice; pageSize: number }> = {};
+    const savekeyDevices: Record<string, LiveSaveKeyDrive> = {};
     for (const device of devices) {
-      const id = driveLabelForAddress(device.startAddress);
+      const id = idFor(device);
       const layout = await readTinyElfHeader(bridge, device).catch(() => null);
       if (layout) {
         realDrives.push({
@@ -521,8 +588,9 @@ function Home() {
           totalBytes: layout.sectorSize * layout.totalSectors,
           mode: 'tinyelf-fs',
           canChangeMode: false,
+          fileName,
         });
-        layouts[id] = { device, layout };
+        layouts[id] = { device, layout, bus: bridge };
         const entries = await readDirectory(bridge, device, layout).catch(() => []);
         for (const entry of entries) {
           realFiles.push({
@@ -555,7 +623,10 @@ function Home() {
         // fall back to the well-known SaveKey hardware constants (32 KiB /
         // 64 B pages) so occupancy can still be read before/without it.
         const pageSize = registry?.pageSize ?? 64;
-        const totalPages = registry?.totalPages ?? TOTAL_PAGES;
+        // Never read past the end of the device: a file smaller than the
+        // registry's 32 KiB (e.g. a 4 KiB Backup) only has that many pages;
+        // the rest of the page map just reads as free.
+        const totalPages = Math.min(registry?.totalPages ?? TOTAL_PAGES, Math.floor(device.capacityBytes / pageSize));
         const occupancy = await readPageOccupancy(bridge, device, pageSize, totalPages).catch(() => null);
         realDrives.push({
           id,
@@ -564,9 +635,10 @@ function Home() {
           totalBytes: pageSize * totalPages,
           mode: 'savekey',
           canChangeMode: false,
+          fileName,
         });
         if (occupancy) savekeyPages[id] = occupancy;
-        savekeyDevices[id] = { device, pageSize };
+        savekeyDevices[id] = { device, pageSize, bus: bridge };
       }
     }
     return { realDrives, realFiles, layouts, savekeyPages, savekeyDevices };
@@ -594,43 +666,78 @@ function Home() {
     };
   }, []);
 
+  // Reads every drive from every source that's currently there — the
+  // hardware behind the PicoBridge and/or the opened emulator file — into one
+  // merged set, so both can be browsed side by side.
+  const loadAllSources = useCallback(async (): Promise<LiveData> => {
+    const parts: LiveData[] = [];
+    if (picoBridge.status === 'connected' && picoBridge.bridge) {
+      parts.push(await loadLiveData(picoBridge.bridge, picoBridge.devices, saveKeyRegistry, (device) => driveLabelForAddress(device.startAddress)));
+    }
+    if (image) {
+      parts.push(await loadLiveData(image.bus, [image.bus.device], saveKeyRegistry, () => IMAGE_DRIVE_ID, image.bus.name));
+    }
+    return {
+      realDrives: parts.flatMap((part) => part.realDrives),
+      realFiles: parts.flatMap((part) => part.realFiles),
+      layouts: Object.assign({}, ...parts.map((part) => part.layouts)),
+      savekeyPages: Object.assign({}, ...parts.map((part) => part.savekeyPages)),
+      savekeyDevices: Object.assign({}, ...parts.map((part) => part.savekeyDevices)),
+    };
+  }, [picoBridge.status, picoBridge.bridge, picoBridge.devices, image, saveKeyRegistry, loadLiveData]);
+
+  const applyLiveData = useCallback((data: LiveData) => {
+    if (data.realDrives.length === 0) {
+      setDrives(initialDrives);
+      setFiles(initialTinyElfFiles);
+      setActiveDriveId('E2');
+      setLiveDrives({});
+      setLiveSaveKeyPages({});
+      setLiveSaveKeyDevices({});
+      return;
+    }
+    const ids = data.realDrives.map((drive) => drive.id);
+    const prefer = preferDriveRef.current;
+    preferDriveRef.current = null;
+    setDrives(data.realDrives);
+    setFiles(data.realFiles);
+    setLiveDrives(data.layouts);
+    setLiveSaveKeyPages(data.savekeyPages);
+    setLiveSaveKeyDevices(data.savekeyDevices);
+    // Keep the drive you're looking at if it's still there; jump to a newly
+    // opened file; otherwise fall back to the first drive.
+    setActiveDriveId((current) => (prefer && ids.includes(prefer) ? prefer : ids.includes(current) ? current : ids[0]));
+  }, []);
+
+  const reloadSources = async () => {
+    applyLiveData(await loadAllSources());
+  };
+
   useEffect(() => {
-    const bridge = picoBridge.bridge;
-    if (picoBridge.status !== 'connected' || !bridge) {
-      if (picoBridge.status === 'idle') {
-        setDrives(initialDrives);
-        setFiles(initialTinyElfFiles);
-        setActiveDriveId('E2');
-        setLiveDrives({});
-      }
+    if (!hardwareConnected && !image) {
+      // Nothing left to show (file closed, hardware gone) — drop back to the
+      // empty state, except mid-connect when the drives are about to arrive.
+      if (picoBridge.status !== 'connecting') applyLiveData({ realDrives: [], realFiles: [], layouts: {}, savekeyPages: {}, savekeyDevices: {} });
       return;
     }
 
     let cancelled = false;
     (async () => {
-      const { realDrives, realFiles, layouts, savekeyPages, savekeyDevices } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
-      if (!cancelled && realDrives.length > 0) {
-        setDrives(realDrives);
-        setFiles(realFiles);
-        setActiveDriveId(realDrives[0].id);
-        setLiveDrives(layouts);
-        setLiveSaveKeyPages(savekeyPages);
-        setLiveSaveKeyDevices(savekeyDevices);
-      }
+      const data = await loadAllSources();
+      if (!cancelled) applyLiveData(data);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [picoBridge.status, picoBridge.devices, picoBridge.bridge, loadLiveData, saveKeyRegistry]);
+  }, [hardwareConnected, image, picoBridge.status, loadAllSources, applyLiveData]);
 
   // Lazily loads a real file's actual content the moment it's selected,
   // instead of eagerly for every listed file — walks the sector chain via
   // loadFileContent(). Demo files already carry their bytes and are
   // skipped (no startSector).
   useEffect(() => {
-    const bridge = picoBridge.bridge;
-    if (!selectedFile || !bridge) return;
+    if (!selectedFile) return;
     const startSector = selectedFile.startSector;
     if (startSector === undefined || selectedFile.bytes.length > 0) return;
     const live = liveDrives[selectedFile.driveId];
@@ -641,7 +748,7 @@ function Home() {
     setLoadingFileId(fileId);
     (async () => {
       try {
-        const content = await loadFileContent(bridge, live.device, live.layout, startSector);
+        const content = await loadFileContent(live.bus, live.device, live.layout, startSector);
         if (cancelled) return;
         setFiles((items) =>
           items.map((item) => (item.id === fileId ? { ...item, bytes: Array.from(content), size: content.length } : item)),
@@ -656,7 +763,7 @@ function Home() {
     return () => {
       cancelled = true;
     };
-  }, [selectedFile, liveDrives, picoBridge.bridge]);
+  }, [selectedFile, liveDrives]);
 
   // (Re)derives the editable text/hex drafts whenever the selected file (or
   // its loaded content) changes — including right after a save, so the
@@ -688,13 +795,13 @@ function Home() {
     if (!selectedFile) return;
     const live = liveDrives[selectedFile.driveId];
 
-    if (picoBridge.status === 'connected' && !live) {
+    if (hasSource && !live) {
       setFileEditStatus('error');
       setFileEditMessage('This device is not TinyELF-formatted — use Format first.');
       return;
     }
 
-    if (live && picoBridge.bridge) {
+    if (live) {
       if (selectedFile.attributes === 'R/O') {
         setFileEditStatus('error');
         setFileEditMessage('This file is locked (R/O) — unlock it first.');
@@ -708,9 +815,8 @@ function Home() {
       setFileEditStatus('saving');
       setFileEditMessage('');
       try {
-        const bridge = picoBridge.bridge;
         const result = await overwriteFileContent(
-          bridge,
+          live.bus,
           live.device,
           live.layout,
           { slot: selectedFile.slot, startSector: selectedFile.startSector },
@@ -783,14 +889,13 @@ function Home() {
     setAllocationWriteStatus('idle');
     setAllocationWriteMessage('');
 
-    const bridge = picoBridge.bridge;
     const savekey = liveSaveKeyDevices[activeDriveId];
-    if (!bridge || !savekey || !selectedAllocation) return;
+    if (!savekey || !selectedAllocation) return;
 
     let cancelled = false;
     (async () => {
       try {
-        const bytes = await readPageRange(bridge, savekey.device, savekey.pageSize, selectedAllocation.pageStart, selectedAllocation.pageEnd);
+        const bytes = await readPageRange(savekey.bus, savekey.device, savekey.pageSize, selectedAllocation.pageStart, selectedAllocation.pageEnd);
         if (cancelled) return;
         setSelectedAllocationBytes(Array.from(bytes));
         setAllocationHexDraft(bytesToHexString(bytes));
@@ -803,12 +908,11 @@ function Home() {
     return () => {
       cancelled = true;
     };
-  }, [selectedAllocation, activeDriveId, liveSaveKeyDevices, picoBridge.bridge]);
+  }, [selectedAllocation, activeDriveId, liveSaveKeyDevices]);
 
   const writeAllocationBytes = async () => {
-    const bridge = picoBridge.bridge;
     const savekey = liveSaveKeyDevices[activeDriveId];
-    if (!bridge || !savekey || !selectedAllocation) return;
+    if (!savekey || !selectedAllocation) return;
     const pageCount = selectedAllocation.pageEnd - selectedAllocation.pageStart + 1;
     const parsed = parseHexString(allocationHexDraft, pageCount * savekey.pageSize);
     if (!parsed) {
@@ -819,13 +923,13 @@ function Home() {
     setAllocationWriteStatus('writing');
     setAllocationWriteMessage('');
     try {
-      await writePageRange(bridge, savekey.device, savekey.pageSize, selectedAllocation.pageStart, selectedAllocation.pageEnd, new Uint8Array(parsed));
+      await writePageRange(savekey.bus, savekey.device, savekey.pageSize, selectedAllocation.pageStart, selectedAllocation.pageEnd, new Uint8Array(parsed));
       setSelectedAllocationBytes(parsed);
       setAllocationWriteStatus('idle');
       pushActivity('Block written', `${selectedAllocation.title} · pages ${hex(selectedAllocation.pageStart, 3)}–${hex(selectedAllocation.pageEnd, 3)}`);
       // Occupancy may have changed (e.g. now all-0xFF, or no longer) —
       // refresh just this drive's page map rather than a full reconnect.
-      const occupancy = await readPageOccupancy(bridge, savekey.device, savekey.pageSize, activeTotalPages).catch(() => null);
+      const occupancy = await readPageOccupancy(savekey.bus, savekey.device, savekey.pageSize, activeSaveKeyPages?.length ?? activeTotalPages).catch(() => null);
       if (occupancy) setLiveSaveKeyPages((prev) => ({ ...prev, [activeDriveId]: occupancy }));
     } catch (error) {
       setAllocationWriteStatus('error');
@@ -841,7 +945,7 @@ function Home() {
     setAllocationSelectionSource('map');
     setQuery('');
     const drive = drives.find((item) => item.id === driveId);
-    pushActivity('Drive selected', drive ? `${drive.label} at ${hex(drive.address)}` : driveId);
+    pushActivity('Drive selected', drive ? `${drive.label} · ${driveLocation(drive)}` : driveId);
   };
 
   const setDriveMode = (driveId: string, mode: DriveMode) => {
@@ -861,22 +965,16 @@ function Home() {
     // TinyELF header — refuse rather than silently falling through to the
     // local-only demo behavior below, which would look like a real upload
     // succeeded (and real delete) without ever touching the hardware.
-    if (picoBridge.status === 'connected' && !live) {
+    if (hasSource && !live) {
       pushActivity('Save failed', 'This device is not TinyELF-formatted — use Format first.');
       return;
     }
 
-    if (live && picoBridge.bridge) {
-      const bridge = picoBridge.bridge;
+    if (live) {
       try {
         pushActivity('Uploading file', `${pickedFile.name} · ${formatSize(bytes.length)}`);
-        const saved = await saveFile(bridge, live.device, live.layout, pickedFile.name, bytes);
-        const { realDrives, realFiles, layouts, savekeyPages, savekeyDevices } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
-        setDrives(realDrives);
-        setFiles(realFiles);
-        setLiveDrives(layouts);
-        setLiveSaveKeyPages(savekeyPages);
-        setLiveSaveKeyDevices(savekeyDevices);
+        const saved = await saveFile(live.bus, live.device, live.layout, pickedFile.name, bytes);
+        await reloadSources();
         setSelectedFileId(`${activeDriveId}-${saved.startSector}`);
         pushActivity('File saved', `${saved.name}.${saved.extension} · sector ${saved.startSector} · ${saved.sectorCount} sector${saved.sectorCount === 1 ? '' : 's'}`);
       } catch (error) {
@@ -978,7 +1076,7 @@ function Home() {
   // Stella/Gopher2600 expect for their EEPROM files too).
   const backupSizeFor = (device: DetectedDevice) => {
     if (device.addressCount > 1) return device.capacityBytes;
-    const drive = drives.find((item) => item.address === device.startAddress);
+    const drive = drives.find((item) => item.id === driveLabelForAddress(device.startAddress));
     return drive?.totalBytes ?? guessCapacityKiB(device) * 1024;
   };
 
@@ -1070,17 +1168,12 @@ function Home() {
   const refreshDrive = async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
-    const bridge = picoBridge.bridge;
-    if (picoBridge.status === 'connected' && bridge) {
+    if (hasSource) {
       pushActivity(isSaveKeyView ? 'Reloading registry' : 'Refreshing drive', isSaveKeyView ? 'Re-reading EEPROM page occupancy' : 'Reading directory table');
       try {
-        const { realDrives, realFiles, layouts, savekeyPages, savekeyDevices } = await loadLiveData(bridge, picoBridge.devices, saveKeyRegistry);
-        setDrives(realDrives);
-        setFiles(realFiles);
-        setLiveDrives(layouts);
-        setLiveSaveKeyPages(savekeyPages);
-        setLiveSaveKeyDevices(savekeyDevices);
-        pushActivity(isSaveKeyView ? 'Registry reloaded' : 'Drive refreshed', isSaveKeyView ? `${activeTotalPages} pages re-read` : `${realFiles.filter((file) => file.driveId === activeDriveId).length} files indexed`);
+        const data = await loadAllSources();
+        applyLiveData(data);
+        pushActivity(isSaveKeyView ? 'Registry reloaded' : 'Drive refreshed', isSaveKeyView ? `${activeTotalPages} pages re-read` : `${data.realFiles.filter((file) => file.driveId === activeDriveId).length} files indexed`);
       } catch (error) {
         pushActivity('Refresh failed', error instanceof Error ? error.message : String(error));
       }
@@ -1094,6 +1187,67 @@ function Home() {
       pushActivity(isSaveKeyView ? 'Registry reloaded' : 'Drive refreshed', isSaveKeyView ? `${allocationEntries.length} entries indexed` : `${driveFiles.length} files indexed`);
     }, 600);
   };
+
+  // --- Emulator EEPROM file -------------------------------------------------
+
+  const confirmDiscardImage = () =>
+    !image?.bus.dirty || window.confirm(`Discard unsaved changes to ${image.bus.name}?`);
+
+  const loadImageFile = async (file: File) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!isSupportedImageSize(bytes.length)) {
+      pushActivity(
+        'Open failed',
+        `${file.name} is ${bytes.length} bytes — expected ${IMAGE_SIZES.map((size) => formatSize(size)).join(' / ')} (Stella/Gopher2600 use 32 KB).`,
+      );
+      return;
+    }
+    if (!confirmDiscardImage()) return;
+    preferDriveRef.current = IMAGE_DRIVE_ID;
+    setImage({ bus: new EepromImage(bytes, file.name) });
+    pushActivity('Emulator file opened', `${file.name} · ${formatSize(bytes.length)}`);
+  };
+
+  const newBlankImage = () => {
+    if (!confirmDiscardImage()) return;
+    preferDriveRef.current = IMAGE_DRIVE_ID;
+    setImage({ bus: EepromImage.blank('savekey_eeprom.dat') });
+    pushActivity('Emulator file created', 'savekey_eeprom.dat · 32 KB blank');
+  };
+
+  // Downloads under the original name, so it can go straight over the
+  // emulator's own file (or, with the browser set to ask where to save, be
+  // saved there directly from the download dialog).
+  const saveImage = () => {
+    if (!image) return;
+    const { bus } = image;
+    const url = URL.createObjectURL(new Blob([new Uint8Array(bus.data)], { type: 'application/octet-stream' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = bus.name;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    pushActivity('Emulator file downloaded', `${bus.name} · replace the emulator's ${bus.name} with it (emulator closed)`);
+    bus.dirty = false;
+    setImageTick((tick) => tick + 1);
+  };
+
+  const closeImage = () => {
+    if (!confirmDiscardImage()) return;
+    pushActivity('Emulator file closed', image?.bus.name);
+    setImage(null);
+  };
+
+  // Closing the tab with unsaved image changes loses them — the edits only
+  // ever lived in memory.
+  useEffect(() => {
+    if (!image) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      if (image.bus.dirty) event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [image]);
 
   const selectPage = (page: number) => {
     const owners = activePageOwners[page];
@@ -1120,7 +1274,7 @@ function Home() {
   const selectedPreview = selectedFile?.bytes.length
     ? new TextDecoder().decode(new Uint8Array(selectedFile.bytes)).replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '·')
     : '';
-  const isDisconnected = picoBridge.status !== 'connected';
+  const isDisconnected = !hasSource;
 
   // Rendered at one of two mount points (see allocationSelectionSource):
   // right under the page map for a map click, or inline under the clicked
@@ -1350,7 +1504,7 @@ function Home() {
                   </div>
                   <div className="meter-label"><span>used space</span><b>{formatSize(driveUsed)} / {formatSize(drive.totalBytes)}</b></div>
                   <div className="meter-track"><div className="meter-fill" style={{ width: `${Math.min(100, (driveUsed / drive.totalBytes) * 100)}%` }} /></div>
-                  <div className="mini-meta">I²C · {hex(drive.address)}</div>
+                  <div className="mini-meta" title={driveLocation(drive)}>{driveLocation(drive)}</div>
                   {drive.canChangeMode ? (
                     <div className="view-switch mode-toggle" role="group" aria-label={`${drive.label} format`}>
                       <button className={drive.mode === 'savekey' ? 'selected' : ''} onClick={() => setDriveMode(drive.id, 'savekey')} data-testid={`button-mode-savekey-${drive.id}`}>SaveKey</button>
@@ -1377,7 +1531,7 @@ function Home() {
           </div>
           {!isDisconnected && (
             <div className="topbar-actions">
-               <div className="hardware-chip"><i className="online-dot" /> bus online · {hex(activeDrive.address)}</div>
+               <div className="hardware-chip"><i className="online-dot" /> {activeDrive.fileName ? 'emulator file' : `bus online · ${hex(activeDrive.address)}`}</div>
               <button className="action-button" onClick={refreshDrive} data-testid="button-refresh-drive" title={isSaveKeyView ? 'Re-read the allocation list' : 'Read the directory again'}><RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} /><span>Refresh</span></button>
             </div>
           )}
@@ -1407,7 +1561,7 @@ function Home() {
 
         {!isDisconnected && (
           <div className="breadcrumbs" aria-label="Current drive">
-            <span className="crumb current">{activeDrive.label} · {hex(activeDrive.address)} · {isSaveKeyView ? 'SaveKey allocation registry' : 'TinyELF Basic filesystem'}</span>
+            <span className="crumb current">{activeDrive.label} · {activeDrive.fileName ?? hex(activeDrive.address)} · {isSaveKeyView ? 'SaveKey allocation registry' : 'TinyELF Basic filesystem'}</span>
           </div>
         )}
 
@@ -1427,7 +1581,7 @@ function Home() {
                     <ExternalLink size={14} /><span>View documentation</span>
                   </a>
                 </div>
-                <p className="welcome-hint">Use "Connect to PicoBridge" in the Live hardware panel to get started.</p>
+                <p className="welcome-hint">Use "Connect to PicoBridge" in the Live hardware panel to get started — or open a Stella/Gopher2600 SaveKey file in the Emulator file panel.</p>
                 {!picoBridge.isSupported && <p className="protect-line-light">Web Serial is not supported in this browser — use Chrome, Edge, or Firefox 151+.</p>}
               </div>
             </section>
@@ -1526,7 +1680,7 @@ function Home() {
                 </>
               )}
               {!visibleFiles.length && (() => {
-                const notFormatted = picoBridge.status === 'connected' && !liveDrives[activeDriveId];
+                const notFormatted = hasSource && !liveDrives[activeDriveId];
                 return (
                   <div className="empty-state">
                     <div className="empty-icon">{query ? <Search size={21} /> : <Archive size={21} />}</div>
@@ -1565,7 +1719,16 @@ function Home() {
                             <strong>{formatSize(device.capacityBytes)}</strong>
                             <button
                               className="action-button"
-                              onClick={() => openFormatDialog(device)}
+                              onClick={() => {
+                                if (!picoBridge.bridge) return;
+                                openFormatDialog({
+                                  device,
+                                  bus: picoBridge.bridge,
+                                  label: driveLabelForAddress(device.startAddress),
+                                  isImage: false,
+                                  maxBytes: device.capacityBytes,
+                                });
+                              }}
                               disabled={backupProgress !== null}
                               data-testid={`button-format-${hex(device.startAddress)}`}
                             >
@@ -1639,14 +1802,87 @@ function Home() {
               </div>
             </section>
 
+            <section className="hardware-panel" data-testid="panel-emulator-file">
+              <div className="hardware-heading">
+                <div><h2>Emulator file</h2><p>Stella / Gopher2600 SaveKey .dat</p></div>
+                {image && <span className="connected-badge"><i /> open</span>}
+              </div>
+              <div className="hardware-list">
+                {image ? (
+                  <div className="device-row">
+                    <div className="hardware-stat">
+                      <span className="truncate" title={image.bus.name}>{image.bus.name}</span>
+                      <strong>{formatSize(image.bus.data.length)}</strong>
+                      <button
+                        className="action-button"
+                        onClick={() =>
+                          openFormatDialog({
+                            device: image.bus.device,
+                            bus: image.bus,
+                            label: image.bus.name,
+                            isImage: true,
+                            maxBytes: image.bus.data.length,
+                          })
+                        }
+                        data-testid="button-format-image"
+                      >
+                        <span>Format</span>
+                      </button>
+                    </div>
+                    {image.bus.dirty && <p className="protect-line">Unsaved changes — Download to keep them.</p>}
+                    <div className="backup-actions">
+                      <button
+                        className="action-button"
+                        onClick={saveImage}
+                        title="Downloads the file under its original name — copy it over the emulator's own file"
+                        data-testid="button-save-image"
+                      >
+                        <Save size={14} /><span>Download</span>
+                      </button>
+                      <button className="action-button" onClick={closeImage} data-testid="button-close-image">
+                        <X size={14} /><span>Close</span>
+                      </button>
+                    </div>
+                    <p className="protect-line image-hint">
+                      To use it, copy the download over the emulator's own {image.bus.name} — with the emulator closed, or it overwrites the file on exit.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="backup-actions">
+                    <button className="action-button" onClick={() => imageFileInputRef.current?.click()} data-testid="button-open-image">
+                      <FolderOpen size={14} /><span>Open</span>
+                    </button>
+                    <button className="action-button" onClick={newBlankImage} title="A blank 32 KB SaveKey, the size Stella and Gopher2600 use" data-testid="button-new-image">
+                      <FilePlus size={14} /><span>New blank</span>
+                    </button>
+                  </div>
+                )}
+                <input
+                  ref={imageFileInputRef}
+                  type="file"
+                  hidden
+                  onChange={(event) => {
+                    const picked = event.target.files?.[0];
+                    if (picked) void loadImageFile(picked);
+                    event.target.value = '';
+                  }}
+                  data-testid="input-open-image"
+                />
+              </div>
+            </section>
+
             {!isDisconnected && (
               <section className="hardware-panel" id="hardware-status" data-testid="panel-hardware-status">
                  <div className="hardware-heading"><div><h2>Bus diagnostics</h2><p>live I²C telemetry</p></div><span className="connected-badge"><i /> online</span></div>
                 <div className="hardware-list">
-                  <div className="hardware-stat"><span>Bus address</span><strong>{hex(activeDrive.address)}</strong></div>
+                  {activeDrive.fileName ? (
+                    <div className="hardware-stat"><span>File</span><strong className="truncate" title={activeDrive.fileName}>{activeDrive.fileName}</strong></div>
+                  ) : (
+                    <div className="hardware-stat"><span>Bus address</span><strong>{hex(activeDrive.address)}</strong></div>
+                  )}
                   <div className="hardware-stat"><span>Device type</span><strong>{chipLabel(activeDrive)}</strong></div>
                   <div className="hardware-stat"><span>Capacity</span><strong>{formatSize(activeDrive.totalBytes)}</strong></div>
-                  <div className="hardware-stat"><span>Write protect</span><strong className="good">enabled</strong></div>
+                  {!activeDrive.fileName && <div className="hardware-stat"><span>Write protect</span><strong className="good">enabled</strong></div>}
                   <div className="capacity-block">
                     <div className="capacity-line"><span>used / free</span><strong>{formatSize(usedBytes)} / {formatSize(activeDrive.totalBytes - usedBytes)}</strong></div>
                     <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
@@ -1663,7 +1899,11 @@ function Home() {
                       </div>
                     );
                   })()}
-                  <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
+                  {activeDrive.fileName ? (
+                    <div className="protect-line"><Save size={14} /> changes stay in memory until you Download the file</div>
+                  ) : (
+                    <div className="protect-line"><ShieldCheck size={14} /> writes require physical WP switch off</div>
+                  )}
                 </div>
               </section>
             )}
@@ -1685,7 +1925,7 @@ function Home() {
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="format-dialog-title">
             <div className="modal-head">
               <div>
-                <h2 id="format-dialog-title">Format device {driveLabelForAddress(formatTarget.startAddress)} ({hex(formatTarget.startAddress)})</h2>
+                <h2 id="format-dialog-title">Format {formatTarget.isImage ? `emulator file ${formatTarget.label}` : `device ${formatTarget.label} (${hex(formatTarget.device.startAddress)})`}</h2>
                 <p>
                   {formatFilesystem === 'savekey'
                     ? 'Writes only the system block (page 0) — existing game save pages are left untouched.'
@@ -1745,7 +1985,7 @@ function Home() {
                       onChange={(event) => setFormatCapacityKiB(Number(event.target.value))}
                       data-testid="select-format-capacity"
                     >
-                      {EEPROM_CAPACITY_OPTIONS_KIB.map((kib) => (
+                      {EEPROM_CAPACITY_OPTIONS_KIB.filter((kib) => !formatTarget.isImage || kib * 1024 <= formatTarget.maxBytes).map((kib) => (
                         <option key={kib} value={kib}>{kib} KiB</option>
                       ))}
                     </select>

@@ -16,7 +16,8 @@
 //   $02 File created by DOS 2
 //   $01 File opened for output
 
-import type { DetectedDevice, PicoBridge } from './pico-bridge';
+import type { DetectedDevice } from './pico-bridge';
+import type { EepromBus } from './eeprom-bus';
 import { readDeviceBytes, type TinyElfLayout } from './tinyelf-format';
 
 export const DIRECTORY_ENTRY_SIZE = 16;
@@ -79,7 +80,7 @@ export function parseDirectorySectors(buf: Uint8Array): DirectoryEntry[] {
 }
 
 export async function readDirectoryRaw(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   layout: TinyElfLayout,
 ): Promise<Uint8Array> {
@@ -89,7 +90,7 @@ export async function readDirectoryRaw(
 }
 
 export async function readDirectory(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   layout: TinyElfLayout,
 ): Promise<DirectoryEntry[]> {

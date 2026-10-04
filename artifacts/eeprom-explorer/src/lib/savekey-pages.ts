@@ -3,11 +3,12 @@
 // other byte anywhere in the page means something has actually been written
 // there, regardless of what the allocation registry claims about the slot.
 
-import type { DetectedDevice, PicoBridge } from './pico-bridge';
+import type { DetectedDevice } from './pico-bridge';
+import type { EepromBus } from './eeprom-bus';
 import { readDeviceBytes, resolveDeviceAddress } from './tinyelf-format';
 
 export async function readPageOccupancy(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   pageSize: number,
   totalPages: number,
@@ -31,7 +32,7 @@ export async function readPageOccupancy(
 // Reads the raw bytes for an inclusive page range (e.g. an allocation
 // entry's pageStart..pageEnd) — one flat byte array, in page order.
 export async function readPageRange(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   pageSize: number,
   pageStart: number,
@@ -48,7 +49,7 @@ export async function readPageRange(
 // (e.g. 64 bytes for the classic 24LC256-class SaveKey chip). `data` must
 // be exactly (pageEnd - pageStart + 1) * pageSize bytes.
 export async function writePageRange(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   pageSize: number,
   pageStart: number,
@@ -96,7 +97,7 @@ export function buildSaveKeySystemPage(pageSize: number, tvMode: SaveKeyTvMode):
 // game save data on other pages must never be touched. Skips the write
 // entirely if the page already matches, per the project's wear-leveling rule.
 export async function formatSaveKeyDevice(
-  bridge: PicoBridge,
+  bridge: EepromBus,
   device: DetectedDevice,
   pageSize: number,
   tvMode: SaveKeyTvMode,
