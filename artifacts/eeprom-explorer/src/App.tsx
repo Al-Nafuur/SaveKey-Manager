@@ -36,7 +36,7 @@ import type { DetectedDevice } from '@/lib/pico-bridge';
 import { EepromImage, IMAGE_SIZES, isSupportedImageSize, type EepromBus } from '@/lib/eeprom-bus';
 import { computeTinyElfLayout, formatDevice, readDeviceBytes, readTinyElfHeader, writeDeviceBytes, type TinyElfLayout } from '@/lib/tinyelf-format';
 import { readDirectory } from '@/lib/tinyelf-directory';
-import { loadFileContent, overwriteFileContent, saveFile } from '@/lib/tinyelf-save';
+import { atariNameParts, deleteFile, loadFileContent, overwriteFileContent, saveFile } from '@/lib/tinyelf-save';
 import { EXAMPLES_REPO_URL, fetchExampleFile, fetchExampleLibrary, type ExampleFile, type ExampleFolder } from '@/lib/tinyelf-examples';
 import {
   buildPageOwners,
@@ -73,6 +73,11 @@ type TinyElfFile = {
   // Real files only: directory slot index, needed to overwrite this file's
   // content in place (see overwriteFileContent()) without touching its name.
   slot?: number;
+  // Real files only: whether `bytes` holds the actual content yet. Can't be
+  // inferred from bytes.length — a genuinely empty (0-byte) file has no bytes
+  // after loading either, and treating that as "not loaded" re-fetched it
+  // forever and kept the editor stuck on "Loading…".
+  loaded?: boolean;
 };
 type LiveTinyElfDrive = { device: DetectedDevice; layout: TinyElfLayout; bus: EepromBus };
 type LiveSaveKeyDrive = { device: DetectedDevice; pageSize: number; bus: EepromBus };
@@ -397,6 +402,8 @@ function Home() {
   // list is the honest state until the first real action.
   const [activity, setActivity] = useState<ActivityRecord[]>([]);
   const [dialog, setDialog] = useState<'delete' | 'restore' | 'examples' | null>(null);
+  const [deleteStatus, setDeleteStatus] = useState<'idle' | 'running' | 'error'>('idle');
+  const [deleteMessage, setDeleteMessage] = useState('');
   const [exampleLibrary, setExampleLibrary] = useState<ExampleFolder[] | null>(null);
   const [exampleLibraryStatus, setExampleLibraryStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
   const [exampleLibraryMessage, setExampleLibraryMessage] = useState('');
@@ -612,6 +619,7 @@ function Home() {
             attributes: entry.locked ? 'R/O' : 'R/W',
             driveId: id,
             bytes: [],
+            loaded: false,
             startSector: entry.startSector,
             slot: entry.slot,
           });
@@ -739,7 +747,7 @@ function Home() {
   useEffect(() => {
     if (!selectedFile) return;
     const startSector = selectedFile.startSector;
-    if (startSector === undefined || selectedFile.bytes.length > 0) return;
+    if (startSector === undefined || selectedFile.loaded) return;
     const live = liveDrives[selectedFile.driveId];
     if (!live) return;
 
@@ -751,7 +759,7 @@ function Home() {
         const content = await loadFileContent(live.bus, live.device, live.layout, startSector);
         if (cancelled) return;
         setFiles((items) =>
-          items.map((item) => (item.id === fileId ? { ...item, bytes: Array.from(content), size: content.length } : item)),
+          items.map((item) => (item.id === fileId ? { ...item, bytes: Array.from(content), size: content.length, loaded: true } : item)),
         );
       } catch (error) {
         pushActivity('Load failed', error instanceof Error ? error.message : String(error));
@@ -825,7 +833,7 @@ function Home() {
         const fileId = selectedFile.id;
         setFiles((items) =>
           items.map((item) =>
-            item.id === fileId ? { ...item, bytes: newBytes, size: newBytes.length, startSector: result.startSector } : item,
+            item.id === fileId ? { ...item, bytes: newBytes, size: newBytes.length, startSector: result.startSector, loaded: true } : item,
           ),
         );
         pushActivity('File saved', `${selectedFile.name} · ${formatSize(newBytes.length)}`);
@@ -961,6 +969,15 @@ function Home() {
     const bytes = new Uint8Array(await pickedFile.arrayBuffer());
     const live = liveDrives[activeDriveId];
 
+    // Same 8.3 name (case-sensitive, like TinyELF) as a file already on this
+    // drive: SAVE replaces it rather than adding a second one, so make sure
+    // that's what the user wants first.
+    const { name, extension } = atariNameParts(pickedFile.name);
+    const storedName = extension.trimEnd() ? `${name.trimEnd()}.${extension.trimEnd()}` : name.trimEnd();
+    const lookupName = live ? storedName : pickedFile.name;
+    const existing = driveFiles.find((file) => file.name === lookupName);
+    if (existing && !window.confirm(`${lookupName} already exists on ${activeDrive.label} — replace it?`)) return;
+
     // A real device is connected, but this specific drive has no valid
     // TinyELF header — refuse rather than silently falling through to the
     // local-only demo behavior below, which would look like a real upload
@@ -976,7 +993,7 @@ function Home() {
         const saved = await saveFile(live.bus, live.device, live.layout, pickedFile.name, bytes);
         await reloadSources();
         setSelectedFileId(`${activeDriveId}-${saved.startSector}`);
-        pushActivity('File saved', `${saved.name}.${saved.extension} · sector ${saved.startSector} · ${saved.sectorCount} sector${saved.sectorCount === 1 ? '' : 's'}`);
+        pushActivity(saved.replaced ? 'File replaced' : 'File saved', `${storedName} · sector ${saved.startSector} · ${saved.sectorCount} sector${saved.sectorCount === 1 ? '' : 's'}`);
       } catch (error) {
         pushActivity('Save failed', error instanceof Error ? error.message : String(error));
       }
@@ -987,11 +1004,17 @@ function Home() {
     // demo-only behavior (works on the sample E1/E2 drives). Case is kept as
     // typed, matching the real SAVE path (see atariNameParts()).
     const rawName = pickedFile.name;
-    const extension = rawName.includes('.') ? rawName.split('.').pop() ?? 'BIN' : 'BIN';
+    if (existing) {
+      setFiles((items) => items.map((item) => (item.id === existing.id ? { ...item, bytes: Array.from(bytes), size: bytes.length } : item)));
+      setSelectedFileId(existing.id);
+      pushActivity('File replaced', `${rawName} · ${formatSize(bytes.length)}`);
+      return;
+    }
+    const demoExtension = rawName.includes('.') ? rawName.split('.').pop() ?? 'BIN' : 'BIN';
     const file: TinyElfFile = {
       id: `file-${Date.now()}`,
       name: rawName,
-      extension,
+      extension: demoExtension,
       size: bytes.length,
       modified: '08 May 1997 14:38',
       attributes: 'R/W',
@@ -1049,20 +1072,45 @@ function Home() {
     pushActivity('File exported', selectedFile.name);
   };
 
-  const removeFile = () => {
+  const openDeleteDialog = () => {
+    setDeleteStatus('idle');
+    setDeleteMessage('');
+    setDialog('delete');
+  };
+
+  const closeDeleteDialog = () => {
+    if (deleteStatus === 'running') return;
+    setDialog(null);
+  };
+
+  const removeFile = async () => {
     if (!selectedFile) return;
-    // Real DELETE (flip the directory entry's flag, free its VTOC bits)
-    // isn't implemented yet — refuse rather than silently removing it from
-    // the local view only, which would look like a real delete happened.
-    if (liveDrives[selectedFile.driveId]) {
-      pushActivity('Delete failed', 'Deleting files on real hardware is not implemented yet.');
+    const live = liveDrives[selectedFile.driveId];
+    if (!live) {
+      // Demo file: only exists in the local view.
+      pushActivity('File deleted', selectedFile.name);
+      setFiles((items) => items.filter((file) => file.id !== selectedFile.id));
+      setSelectedFileId(null);
       setDialog(null);
       return;
     }
-    pushActivity('File deleted', selectedFile.name);
-    setFiles((items) => items.filter((file) => file.id !== selectedFile.id));
-    setSelectedFileId(null);
-    setDialog(null);
+    if (selectedFile.startSector === undefined || selectedFile.slot === undefined) {
+      setDeleteStatus('error');
+      setDeleteMessage('Missing sector/slot info for this file — refresh the drive.');
+      return;
+    }
+    setDeleteStatus('running');
+    try {
+      const result = await deleteFile(live.bus, live.device, live.layout, { slot: selectedFile.slot, startSector: selectedFile.startSector });
+      pushActivity('File deleted', `${selectedFile.name} · ${result.sectorsFreed} sector${result.sectorsFreed === 1 ? '' : 's'} freed`);
+      setSelectedFileId(null);
+      setDialog(null);
+      setDeleteStatus('idle');
+      await reloadSources();
+    } catch (error) {
+      setDeleteStatus('error');
+      setDeleteMessage(error instanceof Error ? error.message : String(error));
+    }
   };
 
   // How many bytes a whole-device backup/restore covers for this device. A
@@ -1549,7 +1597,7 @@ function Home() {
             <input ref={fileInputRef} type="file" hidden onChange={(event) => { const picked = event.target.files?.[0]; if (picked) void importFile(picked); event.target.value = ''; }} data-testid="input-file-import" />
              <button className="action-button" onClick={openExamplesDialog} data-testid="button-browse-examples"><BookOpen size={14} /><span>Browse examples</span></button>
              <button className="action-button" disabled={!selectedFile} onClick={exportFile} data-testid="button-export"><Download size={14} /><span>Write out</span></button>
-             <button className="action-button danger" disabled={!selectedFile} onClick={() => setDialog('delete')} data-testid="button-delete"><Trash2 size={14} /><span>Erase</span></button>
+             <button className="action-button danger" disabled={!selectedFile} onClick={openDeleteDialog} data-testid="button-delete"><Trash2 size={14} /><span>Erase</span></button>
             <div className="tool-divider" />
              <div className="search-wrap"><Search size={15} /><input className="search-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search directory entries" aria-label="Filter files" data-testid="input-search-files" /></div>
             <div className="view-switch" aria-label="View mode">
@@ -2012,7 +2060,42 @@ function Home() {
         </div>
       )}
 
-      {dialog === 'delete' && selectedFile && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title"><div className="modal-head"><div><h2 id="delete-dialog-title">Delete file?</h2><p>This action removes the entry from the local drive image.</p></div><button className="modal-close" onClick={() => setDialog(null)} data-testid="button-close-delete-dialog"><X size={17} /></button></div><div className="modal-body"><div className="warning-copy"><LockKeyhole size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />{selectedFile.name} is marked {selectedFile.attributes}. The physical write-protect switch is enabled, so this sample operation only changes the local view.</div><div className="modal-actions"><button className="action-button" onClick={() => setDialog(null)} data-testid="button-cancel-delete">Keep file</button><button className="action-button danger" onClick={removeFile} data-testid="button-confirm-delete"><Trash2 size={14} />Delete file</button></div></div></div></div>}
+      {dialog === 'delete' && selectedFile && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDeleteDialog(); }}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title">
+            <div className="modal-head">
+              <div>
+                <h2 id="delete-dialog-title">Delete {selectedFile.name}?</h2>
+                <p>
+                  {liveDrives[selectedFile.driveId]
+                    ? `Removes it from ${activeDrive.label} and frees its sectors for new files. It can't be undone from here.`
+                    : 'Removes it from this demo drive.'}
+                </p>
+              </div>
+              <button className="modal-close" onClick={closeDeleteDialog} disabled={deleteStatus === 'running'} data-testid="button-close-delete-dialog">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {selectedFile.attributes === 'R/O' && (
+                <div className="warning-copy"><LockKeyhole size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />{selectedFile.name} is locked (R/O) and can't be deleted.</div>
+              )}
+              {deleteStatus === 'error' && <div className="warning-copy">{deleteMessage}</div>}
+              <div className="modal-actions">
+                <button className="action-button" onClick={closeDeleteDialog} disabled={deleteStatus === 'running'} data-testid="button-cancel-delete">Keep file</button>
+                <button
+                  className="action-button danger"
+                  onClick={() => void removeFile()}
+                  disabled={deleteStatus === 'running' || selectedFile.attributes === 'R/O'}
+                  data-testid="button-confirm-delete"
+                >
+                  <Trash2 size={14} />{deleteStatus === 'running' ? 'Deleting…' : 'Delete file'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {dialog === 'restore' && restoreFile && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeRestoreDialog(); }}>

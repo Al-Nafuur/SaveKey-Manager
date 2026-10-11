@@ -16,7 +16,7 @@ import {
   writeSectors,
   type TinyElfLayout,
 } from './tinyelf-format';
-import { DIRECTORY_ENTRY_SIZE, DirEntryFlag, readDirectoryRaw, type DirectoryEntry } from './tinyelf-directory';
+import { DIRECTORY_ENTRY_SIZE, DirEntryFlag, parseDirectorySectors, readDirectoryRaw, type DirectoryEntry } from './tinyelf-directory';
 
 // All our supported capacities (4 KiB-256 KiB) land on exactly 1 VTOC
 // sector — see computeTinyElfLayout's vtocSectors math — so VTOC
@@ -89,7 +89,17 @@ export type SavedFile = {
   sectorCount: number;
   name: string;
   extension: string;
+  // True when an existing file of the same name was replaced rather than a
+  // new directory entry created.
+  replaced: boolean;
 };
+
+// The directory entry with exactly this 8.3 name, if any — byte-exact and
+// case-sensitive, the same way TinyELF Basic matches names.
+export function findEntryByName(entries: DirectoryEntry[], filename: string): DirectoryEntry | undefined {
+  const { name, extension } = atariNameParts(filename);
+  return entries.find((entry) => entry.name === name.trimEnd() && entry.extension === extension.trimEnd());
+}
 
 export async function saveFile(
   bridge: EepromBus,
@@ -100,10 +110,21 @@ export async function saveFile(
 ): Promise<SavedFile> {
   const dataBytesPerSector = layout.sectorSize - SECTOR_CONTROL_BYTES;
   const sectorsNeeded = Math.max(1, Math.ceil(data.length / dataBytesPerSector));
+  const { name, extension } = atariNameParts(filename);
 
-  const vtoc = await readDeviceBytes(bridge, device, layout.vtocStart * layout.sectorSize, layout.sectorSize);
   const directoryBytes = await readDirectoryRaw(bridge, device, layout);
 
+  // A file with this name already exists: replace it — free its sectors and
+  // reuse its directory slot — like TinyELF Basic's own SAVE (and Atari DOS)
+  // does, instead of adding a second entry with an identical name.
+  const existing = findEntryByName(parseDirectorySectors(directoryBytes), filename);
+  if (existing) {
+    if (existing.locked) throw new Error(`${filename} is locked (R/O) and can't be replaced.`);
+    const replaced = await overwriteFileContent(bridge, device, layout, existing, data);
+    return { slot: existing.slot, fileNumber: existing.slot, ...replaced, name, extension, replaced: true };
+  }
+
+  const vtoc = await readDeviceBytes(bridge, device, layout.vtocStart * layout.sectorSize, layout.sectorSize);
   const slot = findFreeDirectorySlot(directoryBytes, layout.maxFiles);
   const fileNumber = slot; // directory slot index doubles as the file number (matches classic DOS 2.x)
   const sectors = findFreeSectors(vtoc, layout, sectorsNeeded);
@@ -140,7 +161,6 @@ export async function saveFile(
   const directorySector = directoryBytes.subarray(directorySectorStart, directorySectorStart + layout.sectorSize);
   const patchedSector = new Uint8Array(directorySector); // copy, don't mutate the read buffer in place
 
-  const { name, extension } = atariNameParts(filename);
   const entryFlags = DirEntryFlag.IN_USE | DirEntryFlag.CREATED_BY_DOS2;
   patchedSector[entryOffsetInSector] = entryFlags;
   patchedSector[entryOffsetInSector + 1] = sectors.length & 0xff;
@@ -152,7 +172,7 @@ export async function saveFile(
 
   await writeSectors(bridge, device, layout.directoryStart + entrySectorIndex, patchedSector, layout.sectorSize);
 
-  return { slot, fileNumber, startSector: sectors[0], sectorCount: sectors.length, name, extension };
+  return { slot, fileNumber, startSector: sectors[0], sectorCount: sectors.length, name, extension, replaced: false };
 }
 
 export type OverwrittenFile = { startSector: number; sectorCount: number };
@@ -231,6 +251,71 @@ export async function overwriteFileContent(
   await writeSectors(bridge, device, layout.directoryStart + entrySectorIndex, patchedSector, layout.sectorSize);
 
   return { startSector: sectors[0], sectorCount: sectors.length };
+}
+
+export type DeletedFile = { sectorsFreed: number };
+
+// DELETE: marks the directory entry deleted and frees its sectors in the VTOC.
+// Per the interop note in TinyELF-FS-SPEC.md only the $80 bit is ORed into
+// the flags byte — name, extension and the other flag bits stay as they were.
+// Data sectors aren't touched (wear-leveling): freeing them in the VTOC is
+// what makes them reusable. Addressed by slot rather than by name, so one of
+// two identically named entries can be removed on its own.
+export async function deleteFile(
+  bridge: EepromBus,
+  device: DetectedDevice,
+  layout: TinyElfLayout,
+  entry: Pick<DirectoryEntry, 'slot' | 'startSector'>,
+): Promise<DeletedFile> {
+  const dataBytesPerSector = layout.sectorSize - SECTOR_CONTROL_BYTES;
+  const entriesPerSector = Math.floor(layout.sectorSize / DIRECTORY_ENTRY_SIZE);
+  const entrySectorIndex = Math.floor(entry.slot / entriesPerSector);
+  const offset = (entry.slot % entriesPerSector) * DIRECTORY_ENTRY_SIZE;
+
+  const directoryBytes = await readDirectoryRaw(bridge, device, layout);
+  const sectorStart = entrySectorIndex * layout.sectorSize;
+  const patchedSector = new Uint8Array(directoryBytes.subarray(sectorStart, sectorStart + layout.sectorSize));
+  const flags = patchedSector[offset];
+  if (flags === DirEntryFlag.NEVER_USED || (flags & DirEntryFlag.DELETED) !== 0) {
+    throw new Error('There is no file in this directory slot any more — refresh the drive.');
+  }
+  if ((flags & DirEntryFlag.LOCKED) !== 0) throw new Error('This file is locked (R/O) and can\'t be deleted.');
+  const startSector = patchedSector[offset + 3] | (patchedSector[offset + 4] << 8);
+  if (startSector !== entry.startSector) {
+    throw new Error('The directory changed since it was read — refresh the drive and try again.');
+  }
+
+  // Collect the chain first and check every sector really belongs to this
+  // file, so a corrupt chain can never free another file's sectors.
+  const chain: number[] = [];
+  const visited = new Set<number>();
+  let sector = startSector;
+  while (sector !== SECTOR_LINK_NONE) {
+    if (visited.has(sector)) throw new Error(`Sector chain loop at sector ${sector} — not deleting.`);
+    if (sector < layout.dataStart || sector >= layout.totalSectors) {
+      throw new Error(`Sector chain points outside the data area (sector ${sector}) — not deleting.`);
+    }
+    visited.add(sector);
+    const control = await readDeviceBytes(bridge, device, sector * layout.sectorSize + dataBytesPerSector, SECTOR_CONTROL_BYTES);
+    const decoded = decodeSectorControl(control[0], control[1], control[2]);
+    if (decoded.fileNumber !== entry.slot) {
+      throw new Error(`Sector ${sector} belongs to file #${decoded.fileNumber}, not #${entry.slot} — not deleting.`);
+    }
+    chain.push(sector);
+    sector = decoded.nextSector;
+  }
+
+  // Directory first, then VTOC: if the second write never happens, the
+  // sectors just stay allocated (lost space) — the other order could leave a
+  // live entry pointing at sectors already handed out to another file.
+  patchedSector[offset] = flags | DirEntryFlag.DELETED;
+  await writeSectors(bridge, device, layout.directoryStart + entrySectorIndex, patchedSector, layout.sectorSize);
+
+  const vtoc = await readDeviceBytes(bridge, device, layout.vtocStart * layout.sectorSize, layout.sectorSize);
+  for (const freed of chain) markSectorFree(vtoc, freed);
+  await writeSectors(bridge, device, layout.vtocStart, vtoc, layout.sectorSize);
+
+  return { sectorsFreed: chain.length };
 }
 
 // Cheaper counterpart to loadFileContent() for when only the exact byte

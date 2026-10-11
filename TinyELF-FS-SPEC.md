@@ -161,6 +161,18 @@ for a cheap variant that reads only the 3 control bytes per sector.
 6. Patch **only the one directory sector** containing the new entry and rewrite
    just that sector — the rest of the directory region is untouched.
 
+**Saving a name that already exists replaces that file** instead of adding a
+second entry (same as TinyELF Basic's `SAVE` and Atari DOS): its old sector
+chain is freed first, a new one is allocated, and the **same directory slot**
+is patched with the new start sector and sector count (name, extension and
+flags unchanged). A locked (`$20`) file is refused. Names compare byte-exact
+and **case-sensitive** after the 8.3 split — `Hello.lst` and `HELLO.LST` are
+two different files, matching how TinyELF Basic looks names up.
+
+**Empty files are valid:** a 0-byte file still occupies exactly one sector,
+whose control byte 0 (`bytesUsed`) is `0`. Readers must not take "no content
+bytes" to mean "not read yet".
+
 ## Wear-leveling constraint (hard requirement)
 
 **Every write path must only write sectors that actually changed** — EEPROM
@@ -180,15 +192,33 @@ uploaded. Any implementation reading this directory format must treat
 "present" as *"not (`$00` never-used, or `$80` deleted-bit set)"* and check
 individual bits (`LOCKED $20`, `CREATED_BY_DOS2 $02`, `OPENED_FOR_OUTPUT $01`)
 independently — never compare the whole byte against one specific combination.
-The same applies going the other way: our own future DELETE (below) must OR
-in the `$80` bit rather than overwriting the whole flags byte, so it doesn't
-clobber bits some other tool (or a future version of this one) set.
+The same applies going the other way: DELETE (below) ORs in the `$80` bit
+rather than overwriting the whole flags byte, so it doesn't clobber bits some
+other tool (or a future version of this one) set.
+
+## Deleting a file (DELETE)
+
+Implemented in `deleteFile()` ([tinyelf-save.ts](artifacts/eeprom-explorer/src/lib/tinyelf-save.ts)).
+Addressed by **directory slot**, not by name, so one of two identically named
+entries (which older uploads could create) can be removed on its own.
+
+1. Read the entry's directory sector. Refuse if the slot is empty/already
+   deleted, if the file is locked (`$20`), or if its start sector no longer
+   matches what the caller saw (stale view).
+2. Walk the sector chain and check every sector: inside the data area, no
+   loop, and its control byte's **file number equals the slot**. Any mismatch
+   aborts — a corrupt chain must never free another file's sectors.
+3. Write the directory sector with `$80` ORed into the flags byte (name,
+   extension and the other flag bits unchanged).
+4. Then rewrite the VTOC with the chain's sectors marked free.
+
+Directory before VTOC on purpose: if the second write never happens the
+sectors only stay allocated (lost space); the other order could leave a live
+entry pointing at sectors that get handed out to another file. Data sectors
+are not touched (wear-leveling) — the old bytes stay until reused.
 
 ## Still open / not yet implemented
 
-- **DELETE**: OR in the entry's `$80` deleted flag (don't overwrite the whole
-  flags byte — see the interop note above) and free its VTOC bits — not
-  implemented yet.
 - **CATALOG refresh nuances**: not fully worked out.
 - **Multi-VTOC-sector handling**: current code assumes exactly 1 VTOC sector.
   True for the entire 4 KiB–256 KiB range per the layout math, but not enforced
