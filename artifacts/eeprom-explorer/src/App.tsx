@@ -329,6 +329,36 @@ function isTextSafeBytes(bytes: number[]): boolean {
   return bytes.every((byte) => byte === 0x09 || byte === 0x0a || byte === 0x0d || (byte >= 0x20 && byte <= 0x7e));
 }
 
+// Names typed into "New file": 8.3, letters/digits/_/- only. Stricter than
+// what an upload accepts on purpose — the name has to survive being typed
+// into a BASIC string literal on the Atari (LOAD "E1:NAME.EXT"), so no
+// spaces, quotes or colons.
+function newFileNameProblem(filename: string): string | null {
+  const match = /^([A-Za-z0-9_-]*)(?:\.([A-Za-z0-9_-]*))?$/.exec(filename.trim());
+  if (!filename.trim()) return 'Enter a file name.';
+  if (!match) return 'Use letters, digits, _ or - only, with at most one dot.';
+  if (!match[1]) return 'The name part before the dot is empty.';
+  if (match[1].length > 8) return `The name part is ${match[1].length} characters — at most 8.`;
+  if ((match[2] ?? '').length > 3) return `The extension is ${match[2].length} characters — at most 3.`;
+  return null;
+}
+
+// Where pasted text first stops being plain ASCII (the same rule the text
+// editor saves by). Text copied from a web page often carries invisible
+// non-breaking spaces or curly quotes, so point at the exact spot.
+function nonAsciiProblem(text: string): string | null {
+  const lines = text.split('\n');
+  for (let line = 0; line < lines.length; line++) {
+    for (let column = 0; column < lines[line].length; column++) {
+      const code = lines[line].charCodeAt(column);
+      if (code === 0x09 || code === 0x0d || (code >= 0x20 && code <= 0x7e)) continue;
+      const known: Record<number, string> = { 0xa0: 'a non-breaking space', 0x2018: 'a curly quote', 0x2019: 'a curly quote', 0x201c: 'a curly quote', 0x201d: 'a curly quote', 0x2013: 'a dash', 0x2014: 'a dash' };
+      return `Line ${line + 1}, column ${column + 1}: ${known[code] ?? `character U+${code.toString(16).toUpperCase().padStart(4, '0')}`} isn't plain ASCII — retype it.`;
+    }
+  }
+  return null;
+}
+
 function nowTime() {
   return new Date().toLocaleTimeString([], { hour12: false });
 }
@@ -401,7 +431,11 @@ function Home() {
   // shows things that actually happened (pushActivity() below), so an empty
   // list is the honest state until the first real action.
   const [activity, setActivity] = useState<ActivityRecord[]>([]);
-  const [dialog, setDialog] = useState<'delete' | 'restore' | 'examples' | null>(null);
+  const [dialog, setDialog] = useState<'delete' | 'restore' | 'examples' | 'newfile' | null>(null);
+  const [newFileName, setNewFileName] = useState('');
+  const [newFileContent, setNewFileContent] = useState('');
+  const [newFileStatus, setNewFileStatus] = useState<'idle' | 'running' | 'error'>('idle');
+  const [newFileMessage, setNewFileMessage] = useState('');
   const [deleteStatus, setDeleteStatus] = useState<'idle' | 'running' | 'error'>('idle');
   const [deleteMessage, setDeleteMessage] = useState('');
   const [exampleLibrary, setExampleLibrary] = useState<ExampleFolder[] | null>(null);
@@ -1026,6 +1060,79 @@ function Home() {
     pushActivity('File imported', `${file.name} · ${formatSize(file.size)}`);
   };
 
+  const openNewFileDialog = () => {
+    setNewFileName('');
+    setNewFileContent('');
+    setNewFileStatus('idle');
+    setNewFileMessage('');
+    setDialog('newfile');
+  };
+
+  const closeNewFileDialog = () => {
+    if (newFileStatus === 'running') return;
+    setDialog(null);
+  };
+
+  // Writes the file once, with whatever was pasted, rather than creating an
+  // empty file and saving into it afterwards — that would write the
+  // directory and VTOC twice for nothing (see the wear-leveling rule).
+  const createNewFile = async () => {
+    const filename = newFileName.trim();
+    const problem = newFileNameProblem(filename) ?? nonAsciiProblem(newFileContent);
+    if (problem) {
+      setNewFileStatus('error');
+      setNewFileMessage(problem);
+      return;
+    }
+    if (driveFiles.some((file) => file.name === filename)) {
+      setNewFileStatus('error');
+      setNewFileMessage(`${filename} already exists on ${activeDrive.label} — pick another name, or open that file and paste there.`);
+      return;
+    }
+    const bytes = new TextEncoder().encode(newFileContent);
+    const live = liveDrives[activeDriveId];
+
+    if (hasSource && !live) {
+      setNewFileStatus('error');
+      setNewFileMessage('This device is not TinyELF-formatted — use Format first.');
+      return;
+    }
+
+    if (live) {
+      setNewFileStatus('running');
+      try {
+        const saved = await saveFile(live.bus, live.device, live.layout, filename, bytes);
+        await reloadSources();
+        setSelectedFileId(`${activeDriveId}-${saved.startSector}`);
+        setPreviewMode('preview');
+        pushActivity('File created', `${filename} · ${formatSize(bytes.length)}`);
+        setNewFileStatus('idle');
+        setDialog(null);
+      } catch (error) {
+        setNewFileStatus('error');
+        setNewFileMessage(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
+    // Demo drive: local only.
+    const file: TinyElfFile = {
+      id: `file-${Date.now()}`,
+      name: filename,
+      extension: filename.includes('.') ? filename.split('.').pop() ?? '' : '',
+      size: bytes.length,
+      modified: '',
+      attributes: 'R/W',
+      driveId: activeDriveId,
+      bytes: Array.from(bytes),
+    };
+    setFiles((items) => [...items, file]);
+    setSelectedFileId(file.id);
+    setPreviewMode('preview');
+    pushActivity('File created', `${filename} · ${formatSize(bytes.length)}`);
+    setDialog(null);
+  };
+
   const openExamplesDialog = () => {
     setDialog('examples');
     if (exampleLibraryStatus === 'idle' || exampleLibraryStatus === 'error') {
@@ -1593,6 +1700,7 @@ function Home() {
           </section>
         ) : (
           <section className="toolbar" aria-label="File actions">
+             <button className="action-button" onClick={openNewFileDialog} data-testid="button-new-file"><FilePlus size={14} /><span>New file</span></button>
              <button className="action-button" onClick={() => fileInputRef.current?.click()} data-testid="button-import"><Upload size={14} /><span>Read into disk</span></button>
             <input ref={fileInputRef} type="file" hidden onChange={(event) => { const picked = event.target.files?.[0]; if (picked) void importFile(picked); event.target.value = ''; }} data-testid="input-file-import" />
              <button className="action-button" onClick={openExamplesDialog} data-testid="button-browse-examples"><BookOpen size={14} /><span>Browse examples</span></button>
@@ -2123,6 +2231,55 @@ function Home() {
                 <button className="action-button" onClick={closeRestoreDialog} disabled={restoreStatus === 'running'} data-testid="button-cancel-restore">Cancel</button>
                 <button className="action-button danger" onClick={() => void runRestore()} disabled={restoreStatus === 'running'} data-testid="button-confirm-restore">
                   {restoreStatus === 'running' ? 'Restoring…' : 'Overwrite device'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dialog === 'newfile' && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeNewFileDialog(); }}>
+          <div className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="newfile-dialog-title">
+            <div className="modal-head">
+              <div>
+                <h2 id="newfile-dialog-title">New file on {activeDrive.label}</h2>
+                <p>Paste a BASIC listing (or leave it empty). Load text files on the Atari with ENTER — .lst is the usual extension.</p>
+              </div>
+              <button className="modal-close" onClick={closeNewFileDialog} disabled={newFileStatus === 'running'} data-testid="button-close-newfile-dialog">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <label htmlFor="newfile-name">File name (8.3)</label>
+              <input
+                id="newfile-name"
+                className="modal-input"
+                value={newFileName}
+                onChange={(event) => setNewFileName(event.target.value)}
+                placeholder="Name.lst"
+                maxLength={12}
+                autoFocus
+                spellCheck={false}
+                disabled={newFileStatus === 'running'}
+                data-testid="input-newfile-name"
+              />
+              <label htmlFor="newfile-content" className="newfile-content-label">Content</label>
+              <textarea
+                id="newfile-content"
+                className="code-editor-input code-editor-plain newfile-content"
+                value={newFileContent}
+                onChange={(event) => setNewFileContent(event.target.value)}
+                placeholder={'10 PRINT "HELLO"\n20 GOTO 10'}
+                spellCheck={false}
+                disabled={newFileStatus === 'running'}
+                data-testid="textarea-newfile-content"
+              />
+              {newFileStatus === 'error' && <div className="warning-copy">{newFileMessage}</div>}
+              <div className="modal-actions">
+                <button className="action-button" onClick={closeNewFileDialog} disabled={newFileStatus === 'running'} data-testid="button-cancel-newfile">Cancel</button>
+                <button className="action-button primary" onClick={() => void createNewFile()} disabled={newFileStatus === 'running'} data-testid="button-create-newfile">
+                  <FilePlus size={14} />{newFileStatus === 'running' ? 'Creating…' : 'Create'}
                 </button>
               </div>
             </div>

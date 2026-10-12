@@ -407,6 +407,8 @@ button.page-cell:hover { border-color:#2f3b7c; }
 .modal-close { border:0; color:#3e487c; background:transparent; padding:2px; }
 .modal-body { padding:18px; }
 .modal-wide .modal-body { max-height:60vh; overflow-y:auto; }
+.modal-body .newfile-content-label { margin-top:14px; }
+.code-editor-input.code-editor-plain.newfile-content { margin-top:0; }
 .example-library { display:grid; gap:16px; }
 .example-folder-name { margin-bottom:6px; color:#53608e; font:10px var(--app-font-mono); text-transform:uppercase; letter-spacing:.08em; }
 .example-folder { display:grid; gap:6px; }
