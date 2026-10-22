@@ -1703,7 +1703,7 @@ function Home() {
              <button className="action-button" onClick={openNewFileDialog} data-testid="button-new-file"><FilePlus size={14} /><span>New file</span></button>
              <button className="action-button" onClick={() => fileInputRef.current?.click()} data-testid="button-import"><Upload size={14} /><span>Read into disk</span></button>
             <input ref={fileInputRef} type="file" hidden onChange={(event) => { const picked = event.target.files?.[0]; if (picked) void importFile(picked); event.target.value = ''; }} data-testid="input-file-import" />
-             <button className="action-button" onClick={openExamplesDialog} data-testid="button-browse-examples"><BookOpen size={14} /><span>Browse examples</span></button>
+             <button className="action-button" onClick={openExamplesDialog} data-testid="button-browse-examples"><BookOpen size={14} /><span>Public Library</span></button>
              <button className="action-button" disabled={!selectedFile} onClick={exportFile} data-testid="button-export"><Download size={14} /><span>Write out</span></button>
              <button className="action-button danger" disabled={!selectedFile} onClick={openDeleteDialog} data-testid="button-delete"><Trash2 size={14} /><span>Erase</span></button>
             <div className="tool-divider" />
@@ -2156,12 +2156,25 @@ function Home() {
                 </>
               )}
               {formatStatus === 'error' && <div className="warning-copy">{formatMessage}</div>}
-              {(formatStatus === 'running' || formatStatus === 'done') && <p className="format-status">{formatMessage}</p>}
+              {formatStatus === 'running' && <p className="format-status">{formatMessage}</p>}
+              {formatStatus === 'done' && (
+                <div className="success-copy" role="status" data-testid="format-success">
+                  {formatMessage === 'Format complete.'
+                    ? `${formatTarget.label} is now formatted as ${formatFilesystem === 'savekey' ? 'a SaveKey' : `TinyELF (${formatCapacityKiB} KiB)`}.`
+                    : formatMessage}
+                </div>
+              )}
               <div className="modal-actions">
-                <button className="action-button" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-cancel-format">Cancel</button>
-                <button className="action-button danger" onClick={() => void runFormat()} disabled={formatStatus === 'running' || formatStatus === 'done'} data-testid="button-confirm-format">
-                  <span>{formatStatus === 'running' ? 'Formatting…' : 'Format'}</span>
-                </button>
+                {formatStatus === 'done' ? (
+                  <button className="action-button primary" onClick={closeFormatDialog} autoFocus data-testid="button-format-ok">OK</button>
+                ) : (
+                  <>
+                    <button className="action-button" onClick={closeFormatDialog} disabled={formatStatus === 'running'} data-testid="button-cancel-format">Cancel</button>
+                    <button className="action-button danger" onClick={() => void runFormat()} disabled={formatStatus === 'running'} data-testid="button-confirm-format">
+                      <span>{formatStatus === 'running' ? 'Formatting…' : 'Format'}</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -2292,10 +2305,10 @@ function Home() {
           <div className="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="examples-dialog-title">
             <div className="modal-head">
               <div>
-                <h2 id="examples-dialog-title">Browse example programs</h2>
+                <h2 id="examples-dialog-title">Browse Public Library</h2>
                 <p>
-                  From the <a href={EXAMPLES_REPO_URL} target="_blank" rel="noopener noreferrer">TinyELF Basic examples library</a> — picking
-                  one uploads it to {activeDrive.label} the same way a local file would.
+                  TinyELF Basic programs shared in the <a href={EXAMPLES_REPO_URL} target="_blank" rel="noopener noreferrer">TinyELF Basic repository on GitHub</a> —
+                  picking one uploads it to {activeDrive.label} the same way a local file would.
                 </p>
               </div>
               <button className="modal-close" onClick={() => setDialog(null)} data-testid="button-close-examples-dialog">
@@ -2311,8 +2324,14 @@ function Home() {
                 ) : (
                   <div className="example-library">
                     {exampleLibrary.map((folder) => (
-                      <div className="example-folder" key={folder.name}>
-                        <div className="example-folder-name">{folder.name}</div>
+                      // Native <details> sharing one name: the browser keeps
+                      // only one section open at a time, so a long library
+                      // stays a short list of headings until one is opened.
+                      <details className="example-folder" name="example-folders" key={folder.name}>
+                        <summary className="example-folder-name">
+                          <span>{folder.name.replace(/^\d+/, '') || folder.name}</span>
+                          <span className="example-folder-count">{folder.files.length}</span>
+                        </summary>
                         {folder.files.map((file) => (
                           <button
                             key={file.path}
@@ -2327,7 +2346,7 @@ function Home() {
                             {exampleUploadingPath === file.path && <RefreshCw size={13} className="animate-spin" />}
                           </button>
                         ))}
-                      </div>
+                      </details>
                     ))}
                   </div>
                 )
