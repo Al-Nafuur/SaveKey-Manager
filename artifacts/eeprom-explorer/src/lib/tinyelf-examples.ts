@@ -40,14 +40,18 @@ export async function fetchExampleLibrary(): Promise<ExampleFolder[]> {
     if (slash === -1) continue; // a file directly under examples/, not in a category folder
     const folderName = rest.slice(0, slash);
     const fileName = rest.slice(slash + 1);
+    if (/\.md$/i.test(fileName)) continue; // folder READMEs are documentation, not programs
     const list = folders.get(folderName) ?? [];
     list.push({ path: entry.path, name: fileName, size: entry.size ?? 0 });
     folders.set(folderName, list);
   }
 
+  // numeric: true so a folder like "9tools" sorts before "14games", and
+  // "Poetry2" before "Poetry10" — plain string order would get both wrong.
+  const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
   return Array.from(folders.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, files]) => ({ name, files: files.sort((a, b) => a.name.localeCompare(b.name)) }));
+    .sort(([a], [b]) => byName(a, b))
+    .map(([name, files]) => ({ name, files: files.sort((a, b) => byName(a.name, b.name)) }));
 }
 
 export async function fetchExampleFile(path: string): Promise<Uint8Array> {
