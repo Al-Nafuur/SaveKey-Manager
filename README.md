@@ -14,7 +14,7 @@ The SaveKey Plus has **two EEPROMs**, and this app understands both of the files
 
 Either format also supports a whole-device **Backup/Restore**: a flat, headerless raw byte dump — deliberately the same format Stella (`savekey_eeprom.dat`) and [Gopher2600](https://github.com/JetSetIlly/Gopher2600) use for their SaveKey/AtariVox EEPROM saves, so a backup taken here can be dropped straight into either emulator's save location, and vice versa.
 
-**PicoBridge** — a Raspberry Pi Pico running dumb USB↔I²C bridge firmware — connects the browser to the SaveKey/SaveKey Plus; all filesystem/layout logic lives in the app itself, not the firmware. See [firmware/pico-bridge](firmware/pico-bridge) for PicoBridge and its wiring.
+**PicoBridge** — a Raspberry Pi Pico running dumb USB↔I²C bridge firmware — connects the browser to the SaveKey/SaveKey Plus; all filesystem/layout logic lives in the app itself, not the firmware. See [firmware/pico-bridge](firmware/pico-bridge) for PicoBridge and its wiring; the prebuilt firmware (`pico_bridge.uf2`) is on the [Releases](https://github.com/Al-Nafuur/SaveKey-Manager/releases/latest) page.
 
 ## Repo layout
 

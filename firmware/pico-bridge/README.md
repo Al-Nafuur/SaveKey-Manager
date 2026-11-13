@@ -40,6 +40,12 @@ Went with CDC/Web Serial, not HID, once the walking-skeleton test (see `artifact
 
 **Update (2026-09):** Firefox 151 (May 2026) added Web Serial support on desktop, ending the Chromium-only restriction — Web Serial is no longer a browser-support argument against CDC at all. (Safari still doesn't support it; Firefox's mobile/Android status wasn't announced.) The app already uses plain feature detection (`'serial' in navigator`), not a Chromium allowlist, so this needed no code change — Firefox users just start working once they're on 151+.
 
+## Download
+
+Prebuilt firmware: download `pico_bridge.uf2` from the [latest release](https://github.com/Al-Nafuur/SaveKey-Manager/releases/latest). To flash it, hold the Pico's BOOTSEL button while plugging it into USB (it shows up as a drive named `RPI-RP2`), then copy `pico_bridge.uf2` onto that drive. The Pico flashes itself and restarts as PicoBridge.
+
+Release builds use the same Debug configuration that was tested on real hardware (build type `Debug`, board `pico`, Pico SDK 2.3.1). You only need the build steps below if you want to change the firmware.
+
 ## Building
 
 Easiest path: install the **"Raspberry Pi Pico"** extension in VS Code — it offers to install the SDK and toolchain for you, then "Compile" / "Run" build and flash this project directly (open this `firmware/pico-bridge` folder as the project root).
