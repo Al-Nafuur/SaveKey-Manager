@@ -370,12 +370,6 @@ function fileIcon(extension: string) {
   return FileText;
 }
 
-function chipLabel(drive: Drive) {
-  if (drive.fileName) return `Emulator file (${formatSize(drive.totalBytes)})`;
-  if (drive.id === 'E1') return '24LC256 (32 KB)';
-  return `64 KB block · 2nd EEPROM (${hex(drive.address)})`;
-}
-
 // Derived from "FileSystem Design ChatGPT.txt" (repo root): sector size tracks
 // the EEPROM's physical page size so one FS sector fits one page write.
 // Directory sizing and the exact 64B/128B cutoff are explicitly still open in
@@ -2036,9 +2030,10 @@ function Home() {
                   ) : (
                     <div className="hardware-stat"><span>Bus address</span><strong>{hex(activeDrive.address)}</strong></div>
                   )}
-                  <div className="hardware-stat"><span>Device type</span><strong>{chipLabel(activeDrive)}</strong></div>
+                  {/* Only what the app actually knows: it can't detect a chip type or a
+                      write-protect state over I²C, so hardware drives show no such rows. */}
+                  {activeDrive.fileName && <div className="hardware-stat"><span>Device type</span><strong>Emulator file ({formatSize(activeDrive.totalBytes)})</strong></div>}
                   <div className="hardware-stat"><span>Capacity</span><strong>{formatSize(activeDrive.totalBytes)}</strong></div>
-                  {!activeDrive.fileName && <div className="hardware-stat"><span>Write protect</span><strong className="good">enabled</strong></div>}
                   <div className="capacity-block">
                     <div className="capacity-line"><span>used / free</span><strong>{formatSize(usedBytes)} / {formatSize(activeDrive.totalBytes - usedBytes)}</strong></div>
                     <div className="capacity-track"><span style={{ width: `${Math.min(100, (usedBytes / activeDrive.totalBytes) * 100)}%` }} /></div>
