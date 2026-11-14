@@ -233,10 +233,11 @@ are not touched (wear-leveling) — the old bytes stay until reused.
 This filesystem is **unrelated to and doesn't touch** the classic SaveKey
 allocation-list format (external registry:
 [atariage-community/savekey-allocation-list](https://github.com/atariage-community/savekey-allocation-list)).
-A SaveKey Plus has two EEPROMs: EEPROM 1 (32 KiB) conventionally holds classic
-SaveKey data, EEPROM 2 (up to 256 KiB) can hold this TinyELF filesystem instead
-— or this filesystem can be installed on a plain single-EEPROM SaveKey instead
-of the classic format. The classic format's own "system block" (page 0: 8-byte
+Any EEPROM can carry either format. On a SaveKey Plus, EEPROM 1 (32 KiB)
+conventionally holds classic SaveKey data and EEPROM 2 (up to 256 KiB) this
+TinyELF filesystem, but either one can be formatted with either format. The same
+goes for a plain single-EEPROM SaveKey, and for custom SaveKey boards whose
+first EEPROM is any size in the supported 4–256 KiB range. The classic format's own "system block" (page 0: 8-byte
 `"ATARIVOX"` signature + 1 TV-mode byte, rest reserved) is a completely separate
 thing — see `formatSaveKeyDevice()` in
 [savekey-pages.ts](artifacts/eeprom-explorer/src/lib/savekey-pages.ts) if that's
